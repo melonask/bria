@@ -14,7 +14,7 @@ RUN cargo build --release --bin bria
 FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates sqlite3 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --create-home --home-dir /var/lib/bria --shell /usr/sbin/nologin bria \
     && mkdir -p /etc/bria /var/log/bria /tmp/bria \
