@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "[pre-commit] Running cargo fmt..."
+cargo fmt --all
+
+if ! git diff --quiet; then
+    echo "[pre-commit] Formatting changes detected, staging them..."
+    git add -u
+fi
+
+echo "[pre-commit] Running cargo test..."
+cargo test 2>&1
+
+echo "[pre-commit] Running cargo clippy..."
+cargo clippy --all-targets -- -D warnings 2>&1
+
+echo "[pre-commit] OK"

@@ -1,0 +1,56 @@
+# http source -> file sink: cancellation test (PG state, concurrency=1)
+[global]
+tmp_dir = "/tmp/bria"
+
+[global.log]
+level = "info"
+format = "json"
+
+[global.state]
+backend = "pg"
+pg_url = "${BRIA_E2E_PG_URL}"
+
+[server]
+enabled = true
+bind = "0.0.0.0"
+port = 4000
+prefix = "v1"
+api_key = "${BRIA_API_KEY}"
+
+[[sources]]
+id = "api"
+type = "http"
+path = "jobs"
+id_field = "id"
+max_body_bytes = 1048576
+
+[[tasks]]
+id = "sleeper"
+driver = "local"
+cmd = "sh"
+args = ["-c", "sleep 15"]
+timeout_secs = 30
+
+[tasks.stdout]
+mode = "capture"
+max_bytes = 4096
+
+[tasks.stderr]
+mode = "capture"
+max_bytes = 4096
+
+[[sinks]]
+id = "file-out"
+type = "file"
+path = "/tmp/bria/results.jsonl"
+
+[[pipelines]]
+id = "http-cancel-pipeline"
+source = "api"
+sinks = ["file-out"]
+concurrency = 1
+
+[[pipelines.steps]]
+id = "run"
+type = "process"
+task = "sleeper"

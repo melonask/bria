@@ -1,0 +1,60 @@
+# webhook source (with HMAC) -> pg sink + pg state
+[global]
+tmp_dir = "/tmp/bria"
+
+[global.log]
+level = "info"
+format = "json"
+
+[global.state]
+backend = "pg"
+pg_url = "${BRIA_E2E_PG_URL}"
+
+[server]
+enabled = true
+bind = "0.0.0.0"
+port = 4000
+prefix = "v1"
+api_key = "${BRIA_API_KEY}"
+
+[[sources]]
+id = "hooks"
+type = "webhook"
+path = "hooks"
+hmac_secret = "${BRIA_E2E_WEBHOOK_SECRET}"
+hmac_header = "X-Bria-Signature"
+id_field = "id"
+max_body_bytes = 1048576
+
+[[tasks]]
+id = "echo"
+driver = "local"
+cmd = "sh"
+args = ["-c", "printf '{\"input\":\"%s\",\"pipeline\":\"%s\"}' \"$1\" \"$PIPELINE_ID\"", "sh", "{{job.payload.message}}"]
+timeout_secs = 10
+
+[tasks.stdout]
+mode = "capture"
+max_bytes = 4096
+
+[tasks.stderr]
+mode = "capture"
+max_bytes = 4096
+
+[[sinks]]
+id = "pg-out"
+type = "pg"
+url = "${BRIA_E2E_PG_URL}"
+
+[sinks.table]
+name = "bria_results"
+
+[[pipelines]]
+id = "webhook-pg-pipeline"
+source = "hooks"
+sinks = ["pg-out"]
+
+[[pipelines.steps]]
+id = "run"
+type = "process"
+task = "echo"

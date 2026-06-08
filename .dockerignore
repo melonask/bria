@@ -1,0 +1,35 @@
+# Build artifacts
+**/target/
+
+# Git
+.git/
+.gitignore
+.githooks/
+.github/
+
+# Editor / OS
+**/.DS_Store
+.agents/
+.opencode/
+.vscode/
+.idea/
+
+# Environment files
+**/.env
+*.env
+.env.*
+
+# Docs and assets (not needed at build time)
+*.md
+LICENSE
+logo.svg
+Config.example.toml
+
+# Logs and temp
+*.log
+*.tmp
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose*.yml

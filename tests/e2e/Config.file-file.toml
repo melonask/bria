@@ -1,0 +1,53 @@
+# file source -> file sink (memory state, no external deps beyond bria)
+[global]
+tmp_dir = "/tmp/bria"
+
+[global.log]
+level = "info"
+format = "json"
+
+[global.state]
+backend = "memory"
+
+[server]
+enabled = true
+bind = "0.0.0.0"
+port = 4000
+prefix = "v1"
+
+[[sources]]
+id = "file-in"
+type = "file"
+path = "/tmp/bria/source"
+poll_interval_secs = 1
+id_field = "id"
+
+[[tasks]]
+id = "echo"
+driver = "local"
+cmd = "sh"
+args = ["-c", "printf '{\"input\":\"%s\",\"pipeline\":\"%s\"}' \"$1\" \"$PIPELINE_ID\"", "sh", "{{job.payload.message}}"]
+timeout_secs = 10
+
+[tasks.stdout]
+mode = "capture"
+max_bytes = 4096
+
+[tasks.stderr]
+mode = "capture"
+max_bytes = 4096
+
+[[sinks]]
+id = "file-out"
+type = "file"
+path = "/tmp/bria/results.jsonl"
+
+[[pipelines]]
+id = "file-file-pipeline"
+source = "file-in"
+sinks = ["file-out"]
+
+[[pipelines.steps]]
+id = "run"
+type = "process"
+task = "echo"

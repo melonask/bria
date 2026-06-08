@@ -1,0 +1,65 @@
+[global]
+tmp_dir = "/tmp/bria"
+
+[global.log]
+level = "info"
+format = "json"
+
+[global.state]
+backend = "pg"
+pg_url = "${BRIA_E2E_PG_URL}"
+
+[server]
+enabled = true
+bind = "0.0.0.0"
+port = 4000
+prefix = "v1"
+api_key = "${BRIA_API_KEY}"
+
+[[sources]]
+id = "api"
+type = "http"
+path = "jobs"
+id_field = "id"
+max_body_bytes = 1048576
+
+[[tasks]]
+id = "uppercase"
+driver = "local"
+cmd = "sh"
+args = ["-c", "printf '{\"input\":\"%s\",\"upper\":\"%s\"}' \"$1\" \"$(printf '%s' \"$1\" | tr '[:lower:]' '[:upper:]')\"", "sh", "{{job.payload.message}}"]
+timeout_secs = 10
+
+[tasks.stdout]
+mode = "capture"
+max_bytes = 4096
+
+[tasks.stderr]
+mode = "capture"
+max_bytes = 4096
+
+[[sinks]]
+id = "pg-results"
+type = "pg"
+url = "${BRIA_E2E_PG_URL}"
+
+[sinks.table]
+name = "bria_results"
+
+[[pipelines]]
+id = "uppercase-pipeline"
+source = "api"
+sinks = ["pg-results"]
+concurrency = 2
+
+[[pipelines.steps]]
+id = "run"
+type = "process"
+task = "uppercase"
+
+[pipelines.steps.outputs]
+format = "json"
+
+[[pipelines.steps.outputs.fields]]
+key = "upper"
+name = "upper"

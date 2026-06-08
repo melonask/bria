@@ -1,0 +1,42 @@
+# ── Rust build artifacts ─────────────────────────────────────────────────────
+/target/
+**/target/
+**/*.rs.bk
+
+# ── Local configuration and secrets ──────────────────────────────────────────
+# Keep Config.example.toml and e2e/*.toml tracked; ignore only local overrides.
+/Config.toml
+/config/
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+
+# ── Local chain / e2e runtime data ───────────────────────────────────────────
+/test-ledger/
+/ledger/
+/bitcoin/
+/regtest/
+/solana-ledger/
+/out/
+/cache/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.log
+
+# ── Editor / OS files ────────────────────────────────────────────────────────
+.DS_Store
+**/.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# ── Local AI/tooling state ───────────────────────────────────────────────────
+.agents/
+.opencode/
