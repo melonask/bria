@@ -136,15 +136,23 @@ mkdir -p tmp/bria/source
 chmod -R 777 tmp/bria
 
 # ── Pre-create source tables before bria starts ───────────────────────────────
+# Use a one-shot container with the same volume mount to avoid
+# file ownership/locking issues on Linux CI.
 case "$SCENARIO" in
     sqlite-file)
-        sqlite3 tmp/bria/source.db "
-            CREATE TABLE IF NOT EXISTS bria_jobs (
-                id TEXT PRIMARY KEY,
-                payload TEXT NOT NULL DEFAULT '{}',
-                status TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );"
+        cat > tmp/source_setup.sql << 'SQLEOF'
+CREATE TABLE IF NOT EXISTS bria_jobs (
+    id TEXT PRIMARY KEY,
+    payload TEXT NOT NULL DEFAULT '{}',
+    status TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+SQLEOF
+        docker run --rm --entrypoint sh \
+            -v "$(pwd)/tmp/bria:/tmp/bria" \
+            -v "$(pwd)/tmp/source_setup.sql:/setup.sql:ro" \
+            "$BRIA_IMAGE" -c 'sqlite3 /tmp/bria/source.db < /setup.sql' 2>/dev/null || true
+        rm -f tmp/source_setup.sql
         ;;
 esac
 
@@ -388,7 +396,7 @@ case "$SCENARIO" in
         ;;
 
     sqlite-file)
-        sqlite3 tmp/bria/source.db \
+        $BRIA_COMPOSE exec -T bria sqlite3 /tmp/bria/source.db \
             "INSERT OR REPLACE INTO bria_jobs (id, payload, status) VALUES ('$JOB_ID', '{\"id\":\"$JOB_ID\",\"message\":\"hello sqlite-file\"}', NULL);"
         ;;
 
