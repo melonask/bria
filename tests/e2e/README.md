@@ -1,26 +1,42 @@
 # Bria E2E Tests
 
 End-to-end test scenarios exercising every source, sink, and state backend, plus failure
-and recovery paths.
+and recovery paths. The full suite (~6 min) runs infrastructure once, then cycles bria
+through 19 configs.
 
 ## Quick start
 
 ```bash
-# Run a single scenario
+# Run all 19 scenarios (builds image, starts infra, runs, tears down)
+./run.sh --all
+
+# Run a single scenario (requires infra already up via --infra-up)
+./run.sh --infra-up
 ./run.sh http-pg
-
-# Run all happy-path scenarios
-for s in http-pg file-file file-sqlite http-file http-sqlite http-sse \
-         webhook-pg cron-file pg-pg sqlite-file \
-         queue-file http-queue http-webhook http-pg-recovery; do
-    ./run.sh "$s" || break
-done
-
-# Run failure/recovery scenarios
-for s in http-nonzero http-413 http-cancel http-condition-false webhook-hmac-401; do
-    ./run.sh "$s" || break
-done
+./run.sh --infra-down
 ```
+
+## Architecture
+
+Two compose files share a Docker network (`e2e-net`):
+
+| File | Purpose |
+|------|---------|
+| `docker-compose.infra.yml` | Long-lived services: postgres, rabbitmq, webhook-echo, amqp-helper |
+| `docker-compose.yml` | Bria only — restarted per scenario with a fresh config |
+
+Infra starts once and stays up for the entire suite. Each scenario stops bria, swaps
+`Config.toml` (symlink to `Config.<scenario>.toml`), resets PG tables, then starts bria
+again. This avoids ~28 minutes of repeated container startup/teardown and image pulls.
+
+## Run modes
+
+| Command | What it does |
+|---------|-------------|
+| `./run.sh --all` | Build `bria:e2e` image, start infra, run all 19 scenarios, tear down infra |
+| `./run.sh --infra-up` | Start postgres, rabbitmq, webhook-echo, amqp-helper and wait for healthy |
+| `./run.sh --infra-down` | Stop and remove all infra containers, volumes, and the `e2e-net` network |
+| `./run.sh <scenario>` | Run a single scenario (infra must already be up) |
 
 ## Scenarios
 
@@ -55,27 +71,49 @@ done
 
 ## Services
 
-One shared `docker-compose.yml` provides:
-- **postgres** (`postgres:18-alpine`) — pg source, pg sink, pg state
-- **rabbitmq** (`rabbitmq:4-alpine`) — queue source, queue sink
-- **webhook-echo** — captures webhook sink POSTs
-- **amqp-helper** — publishes/consumes AMQP messages via pika
-- **bria** — the main application
+### Infra (`docker-compose.infra.yml`, project `e2e-infra`)
 
-Test-only credentials and URLs are supplied through environment variables with
-safe local defaults in `docker-compose.yml`/`run.sh` (`BRIA_API_KEY`,
-`BRIA_E2E_PG_URL`, `BRIA_E2E_AMQP_URL`, `BRIA_E2E_WEBHOOK_SECRET`, and
-`BRIA_E2E_BASE_URL`). Override them from the shell when running against a
-non-default local test environment.
+| Service | Image | Notes |
+|---------|-------|-------|
+| **postgres** | `postgres:18-alpine` | PG source, sink, and state backend |
+| **rabbitmq** | `rabbitmq:4-alpine` | AMQP queue source and sink |
+| **webhook-echo** | `python:3-alpine` | Logs webhook sink POSTs to stdout |
+| **amqp-helper** | `python:3-alpine` | Publishes/consumes AMQP messages via pika |
+
+### Bria (`docker-compose.yml`, project `e2e-bria`)
+
+| Component | Details |
+|-----------|---------|
+| **image** | `bria:e2e` — pre-built by `--all` |
+| **port** | `4000:4000` (mapped to host) |
+| **config** | `./Config.toml` → `/etc/bria/Config.toml:ro` |
+| **scratch** | `./tmp/bria` → `/tmp/bria` |
+
+Bria reaches infra services by Docker service name via the shared `e2e-net` network
+(e.g. `postgres:5432`, `rabbitmq:5672`, `webhook-echo:8080`).
+
+## Environment variables
+
+| Variable | Default | Used by |
+|----------|---------|---------|
+| `BRIA_API_KEY` | `e2e-secret` | Bria server API key |
+| `BRIA_E2E_BASE_URL` | `http://localhost:4000/v1` | curl commands in run.sh |
+| `BRIA_E2E_PG_URL` | `postgres://bria:bria@postgres:5432/bria` | Bria PG connections |
+| `BRIA_E2E_AMQP_URL` | `amqp://bria:bria@rabbitmq:5672` | Bria AMQP connections |
+| `BRIA_E2E_WEBHOOK_SECRET` | `test-secret-42` | Webhook HMAC secret |
+
+Override any of these before running `./run.sh` to test against non-default
+environments.
 
 ## Files
 
 ```
 tests/e2e/
-  docker-compose.yml          # shared infra
+  docker-compose.yml          # bria service (per-scenario restart)
+  docker-compose.infra.yml   # shared infra (once per suite)
   run.sh                      # scenario runner
   Config.<scenario>.toml      # per-scenario bria configs
   README.md
 ```
 
-`run.sh` cleans up after each run (containers, volumes, temp files).
+`run.sh` cleans up after each scenario (bria container, `Config.toml` symlink, `tmp/`).

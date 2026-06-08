@@ -15,18 +15,19 @@ jobs:
   e2e:
     name: E2E (Docker Compose)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
 
       - name: Install host dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y -qq sqlite3
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
       - name: Build bria image
         run: docker build -t bria:e2e .
+
+      - name: Start shared infra
+        working-directory: tests/e2e
+        run: ./run.sh --infra-up
 
       # ── Happy-path and recovery scenarios ──
       - name: Run e2e (happy-path)
@@ -84,3 +85,8 @@ jobs:
             echo "::endgroup::"
           done
           exit $failed
+
+      - name: Tear down shared infra
+        if: always()
+        working-directory: tests/e2e
+        run: ./run.sh --infra-down

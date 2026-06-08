@@ -9,10 +9,11 @@ Bria is a Rust-based multi-pipeline job orchestrator. It ingests jobs from files
 ## Quick start
 
 ```bash
-cargo install --path .
-cp Config.example.toml Config.toml
+cargo install bria
+```
+
+```bash
 bria --config Config.toml
-bria ping
 ```
 
 ## CLI
@@ -225,25 +226,22 @@ curl -X POST http://localhost:4000/v1/jobs \
 
 ## Docker
 
-Build and run:
-
 ```bash
-docker build -t bria:local .
 docker run --rm -p 4000:4000 \
   -v "$PWD/Config.toml:/etc/bria/Config.toml:ro" \
-  bria:local
+  ghcr.io/melonask/bria:latest
 ```
 
 The default `CMD` passes `--config /etc/bria/Config.toml`.  Override it to run a
 one-shot check or the built-in health command:
 
 ```bash
-docker run --rm bria:local ping          # always works, no config needed
+docker run --rm bria:latest ping          # always works, no config needed
 ```
 
 The image includes an OCI `HEALTHCHECK` that calls `bria ping` every 30 s.
 
-E2E Docker Compose files live in `tests/e2e/`.
+E2E Docker Compose files and run script live in `tests/e2e/` — see `tests/e2e/README.md`.
 
 ## Developer functions and exported API
 
@@ -269,9 +267,11 @@ cargo test
 
 # End-to-end scenarios (requires Docker)
 cd tests/e2e
-./run.sh http-pg                  # single scenario
-./run.sh webhook-hmac-401         # failure: bad HMAC
-# See tests/e2e/README.md for the full scenario list
+./run.sh --all                    # build, run all 19 scenarios (~6 min), tear down
+./run.sh --infra-up               # start shared infra (postgres, rabbitmq, etc.)
+./run.sh http-pg                  # run a single scenario
+./run.sh --infra-down             # tear down shared infra
+# See tests/e2e/README.md for the full scenario list and architecture
 ```
 
 ## License
