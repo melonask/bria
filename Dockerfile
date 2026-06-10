@@ -14,7 +14,7 @@ RUN mkdir -p src && echo 'fn main(){}' > src/main.rs
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo fetch --locked
+    cargo fetch
 
 COPY src/ src/
 
