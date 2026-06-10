@@ -61,18 +61,23 @@ pub enum Error {
     #[error("Server error: {0}")]
     Server(String),
 
+    #[cfg(feature = "webhook")]
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 
+    #[cfg(any(feature = "sqlite", feature = "postgres"))]
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
 
+    #[cfg(any(feature = "sqlite", feature = "postgres"))]
     #[error("Database migration error: {0}")]
     Migration(#[from] sqlx::migrate::MigrateError),
 
+    #[cfg(feature = "amqp")]
     #[error("AMQP error: {0}")]
     Amqp(#[from] lapin::Error),
 
+    #[cfg(feature = "amqp")]
     #[error("URL parse error: {0}")]
     Url(#[from] url::ParseError),
 

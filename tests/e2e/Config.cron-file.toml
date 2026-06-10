@@ -18,7 +18,7 @@ prefix = "v1"
 [[sources]]
 id = "ticker"
 type = "cron"
-schedule = "*/5 * * * * *"
+schedule = "*/1 * * * * *"
 tz = "UTC"
 
 [sources.payload]

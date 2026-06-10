@@ -10,7 +10,9 @@
 use bria::config::{self, StateConfig};
 use bria::context::Job;
 use bria::sources::create_job;
-use bria::state::{self, MemoryStore, SqliteStateStore, StateStore};
+#[cfg(feature = "sqlite")]
+use bria::state::SqliteStateStore;
+use bria::state::{self, MemoryStore, StateStore};
 use bria::util;
 use std::collections::HashMap;
 
@@ -219,6 +221,7 @@ async fn memory_store_handles_empty_recovery() {
 // state::SqliteStateStore
 // =============================================================================
 
+#[cfg(feature = "sqlite")]
 fn unique_sqlite_path(label: &str) -> String {
     let path = std::env::temp_dir().join(format!(
         "bria-st-test-{}-{}-{}.db",
@@ -231,6 +234,7 @@ fn unique_sqlite_path(label: &str) -> String {
     s
 }
 
+#[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_state_store_creates_table_on_fresh_db() {
     let path = unique_sqlite_path("fresh");
@@ -240,6 +244,7 @@ async fn sqlite_state_store_creates_table_on_fresh_db() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_state_store_new_twice_is_idempotent() {
     let path = unique_sqlite_path("idem");
@@ -250,6 +255,7 @@ async fn sqlite_state_store_new_twice_is_idempotent() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_state_store_record_queued_inserts_row() {
     let path = unique_sqlite_path("insert");
@@ -265,6 +271,7 @@ async fn sqlite_state_store_record_queued_inserts_row() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_state_store_record_queued_twice_upserts() {
     let path = unique_sqlite_path("upsert");
@@ -280,6 +287,7 @@ async fn sqlite_state_store_record_queued_twice_upserts() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_state_store_records_running() {
     let path = unique_sqlite_path("running");
@@ -294,6 +302,7 @@ async fn sqlite_state_store_records_running() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_state_store_records_completed_and_excludes_from_recovery() {
     let path = unique_sqlite_path("completed");
@@ -310,6 +319,7 @@ async fn sqlite_state_store_records_completed_and_excludes_from_recovery() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_state_store_recovery_deserializes_payload_and_labels() {
     let path = unique_sqlite_path("deser");
@@ -327,6 +337,7 @@ async fn sqlite_state_store_recovery_deserializes_payload_and_labels() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_state_store_recovery_handles_null_correlation_key() {
     let path = unique_sqlite_path("null-ck");
@@ -345,6 +356,7 @@ async fn sqlite_state_store_recovery_handles_null_correlation_key() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_state_store_recovery_handles_empty_labels() {
     let path = unique_sqlite_path("empty-labels");
@@ -363,6 +375,7 @@ async fn sqlite_state_store_recovery_handles_empty_labels() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_state_store_multiple_jobs_across_pipelines() {
     let path = unique_sqlite_path("multi");
@@ -399,6 +412,7 @@ async fn create_store_memory_backend_returns_memory_store() {
     assert!(store.recover_incomplete().await.unwrap().is_empty());
 }
 
+#[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn create_store_sqlite_backend_returns_sqlite_store() {
     let path = unique_sqlite_path("factory");
@@ -439,6 +453,7 @@ fn quote_ident_wraps_valid_identifiers() {
     assert_eq!(util::quote_ident("table", "orders").unwrap(), "\"orders\"");
 }
 
+#[cfg(feature = "amqp")]
 #[test]
 fn amqp_url_with_credentials_applies_configured_credentials() {
     assert_eq!(

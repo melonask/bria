@@ -28,8 +28,8 @@ max_body_bytes = 1048576
 id = "recoverable"
 driver = "local"
 cmd = "sh"
-args = ["-c", "sleep 12; printf 'recovered:%s' '{{ job.payload.message }}'"]
-timeout_secs = 30
+args = ["-c", "sleep 3; printf 'recovered:%s' '{{ job.payload.message }}'"]
+timeout_secs = 10
 
 [tasks.stdout]
 mode = "capture"

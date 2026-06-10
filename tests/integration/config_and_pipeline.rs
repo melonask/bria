@@ -130,6 +130,7 @@ task = "defaults"
     assert_eq!(config.tasks[0].stdout.max_bytes, 10 * 1024 * 1024);
 }
 
+#[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_state_store_recovers_running_jobs_and_clears_completed_jobs() {
     let db_path = std::env::temp_dir().join(format!(

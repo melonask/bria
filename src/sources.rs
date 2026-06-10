@@ -1,12 +1,23 @@
 use std::path::PathBuf;
 
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 use sqlx::Row;
 use tokio::sync::mpsc;
 
 use crate::config;
 use crate::context::Job;
-use crate::error::{Error, Result};
-use crate::util::{amqp_url_with_credentials, quote_ident, validate_identifier};
+#[cfg(any(
+    feature = "cron",
+    feature = "amqp",
+    feature = "sqlite",
+    feature = "postgres"
+))]
+use crate::error::Error;
+use crate::error::Result;
+#[cfg(feature = "amqp")]
+use crate::util::amqp_url_with_credentials;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+use crate::util::{quote_ident, validate_identifier};
 
 /// Create a Job from a payload value.
 pub fn create_job(source: &config::SourceConfig, value: &serde_json::Value) -> Job {
@@ -405,6 +416,7 @@ fn check_and_send_job(
 // Cron source
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "cron")]
 pub async fn run_cron_source_inline(
     source: &config::SourceConfig,
     tx: &mpsc::UnboundedSender<Job>,
@@ -447,6 +459,7 @@ pub async fn run_cron_source_inline(
 // Queue source (AMQP)
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "amqp")]
 pub async fn run_queue_source_inline(
     source: &config::SourceConfig,
     tx: &mpsc::UnboundedSender<Job>,
@@ -467,6 +480,7 @@ pub async fn run_queue_source_inline(
     }
 }
 
+#[cfg(feature = "amqp")]
 async fn run_queue_source_once(
     source: &config::SourceConfig,
     tx: &mpsc::UnboundedSender<Job>,
@@ -643,6 +657,7 @@ async fn run_queue_source_once(
 // SQLite source
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "sqlite")]
 pub async fn run_sqlite_source_inline(
     source: &config::SourceConfig,
     tx: &mpsc::UnboundedSender<Job>,
@@ -730,6 +745,7 @@ pub async fn run_sqlite_source_inline(
 // PostgreSQL source
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "postgres")]
 pub async fn run_pg_source_inline(
     source: &config::SourceConfig,
     tx: &mpsc::UnboundedSender<Job>,
@@ -812,6 +828,7 @@ pub async fn run_pg_source_inline(
 
 /// Parse a target job ID from a JSON string body for cancellation deliveries.
 /// Tries `target_job_id`, `job_id`, then `id` field, or falls back to trimmed string body.
+#[cfg(feature = "amqp")]
 fn parse_cancel_target_id(body: &str) -> Option<String> {
     let trimmed = body.trim();
     // Try JSON parsing

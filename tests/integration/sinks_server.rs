@@ -1,3 +1,7 @@
+#![cfg(feature = "server")]
+#![cfg(feature = "webhook")]
+#![cfg(feature = "sqlite")]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

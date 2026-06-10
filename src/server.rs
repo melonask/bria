@@ -2,25 +2,30 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::extract::ws::{self, WebSocketUpgrade};
-use axum::{
-    Json, Router,
-    body::Bytes,
-    extract::{DefaultBodyLimit, OriginalUri, Path, Request, State},
-    http::{HeaderMap, StatusCode},
-    middleware::{self, Next},
-    response::{IntoResponse, Response},
-    routing::{delete, get, post},
-};
 use dashmap::DashMap;
-use hmac::{Hmac, KeyInit, Mac};
-use sha2::Sha256;
 use tokio::sync::{broadcast, mpsc};
 
+#[cfg(feature = "server")]
 use crate::config;
 use crate::context::Job;
 use crate::error::Error;
-use crate::util::{cancel_signal_ttl, prune_expired_cancel_signals};
+
+#[cfg(feature = "server")]
+use {
+    crate::util::{cancel_signal_ttl, prune_expired_cancel_signals},
+    axum::extract::ws::{self, WebSocketUpgrade},
+    axum::{
+        Json, Router,
+        body::Bytes,
+        extract::{DefaultBodyLimit, OriginalUri, Path, Request, State},
+        http::{HeaderMap, StatusCode},
+        middleware::{self, Next},
+        response::{IntoResponse, Response},
+        routing::{delete, get, post},
+    },
+    hmac::{Hmac, KeyInit, Mac},
+    sha2::Sha256,
+};
 
 /// Shared server state.
 #[derive(Clone)]
@@ -46,13 +51,13 @@ pub struct ServerHandle {
 /// Start the HTTP server if enabled.
 pub async fn start_server(
     config: Arc<crate::config::Config>,
-    source_txs: HashMap<String, mpsc::UnboundedSender<Job>>,
-    broadcast_tx: Option<broadcast::Sender<serde_json::Value>>,
-    shutdown_rx: Option<tokio::sync::watch::Receiver<bool>>,
+    _source_txs: HashMap<String, mpsc::UnboundedSender<Job>>,
+    _broadcast_tx: Option<broadcast::Sender<serde_json::Value>>,
+    _shutdown_rx: Option<tokio::sync::watch::Receiver<bool>>,
 ) -> crate::error::Result<ServerHandle> {
-    let server_cfg = &config.server;
+    let server_enabled = config.server.enabled;
 
-    if !server_cfg.enabled {
+    if !server_enabled {
         tracing::info!("Server is disabled");
         return Ok(ServerHandle {
             join_handle: None,
@@ -60,6 +65,28 @@ pub async fn start_server(
             pipeline_pauses: Arc::new(DashMap::new()),
         });
     }
+
+    #[cfg(not(feature = "server"))]
+    {
+        Err(Error::Unsupported(
+            "Server requires the 'server' feature".to_string(),
+        ))
+    }
+
+    #[cfg(feature = "server")]
+    {
+        start_server_inner(config, _source_txs, _broadcast_tx, _shutdown_rx).await
+    }
+}
+
+#[cfg(feature = "server")]
+async fn start_server_inner(
+    config: Arc<crate::config::Config>,
+    source_txs: HashMap<String, mpsc::UnboundedSender<Job>>,
+    broadcast_tx: Option<broadcast::Sender<serde_json::Value>>,
+    shutdown_rx: Option<tokio::sync::watch::Receiver<bool>>,
+) -> crate::error::Result<ServerHandle> {
+    let server_cfg = &config.server;
 
     let state = AppState {
         config: config.clone(),
@@ -105,6 +132,7 @@ pub async fn start_server(
     })
 }
 
+#[cfg(feature = "server")]
 /// Build the Axum router.
 fn build_router(state: AppState, server_cfg: &config::ServerConfig) -> Router {
     let prefix = server_cfg.prefix.clone();
@@ -191,6 +219,7 @@ fn build_router(state: AppState, server_cfg: &config::ServerConfig) -> Router {
 // Auth middleware
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "server")]
 /// Enforce API key authentication on all routes when configured.
 async fn auth_middleware(State(state): State<AppState>, request: Request, next: Next) -> Response {
     let api_key = &state.config.server.api_key;
@@ -227,11 +256,13 @@ async fn auth_middleware(State(state): State<AppState>, request: Request, next: 
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// GET /{prefix}/ping — health check.
+#[cfg(feature = "server")]
 async fn ping_handler() -> &'static str {
     "pong"
 }
 
 /// POST /{prefix}/{source_path} — submit a job to an HTTP/webhook source.
+#[cfg(feature = "server")]
 async fn submit_job_handler(
     State(state): State<AppState>,
     OriginalUri(uri): OriginalUri,
@@ -369,6 +400,7 @@ async fn submit_job_handler(
 
 /// DELETE /{prefix}/{source_path}/{id} — cancel a job.
 /// Bria is stateless, so we record a cancellation signal and acknowledge the request.
+#[cfg(feature = "server")]
 async fn cancel_job_handler(
     State(state): State<AppState>,
     OriginalUri(uri): OriginalUri,
@@ -461,6 +493,7 @@ async fn cancel_job_handler(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// GET /{prefix}/sse — Server-Sent Events stream of results.
+#[cfg(feature = "server")]
 async fn sse_handler(
     State(state): State<AppState>,
 ) -> axum::response::Sse<
@@ -519,6 +552,7 @@ async fn sse_handler(
 }
 
 /// GET /{prefix}/ws — WebSocket stream of results.
+#[cfg(feature = "server")]
 async fn ws_handler(
     State(state): State<AppState>,
     Path(ws_path): Path<String>,
@@ -538,6 +572,7 @@ async fn ws_handler(
 
 /// Handle an upgraded WebSocket connection: send broadcast events as text and
 /// periodic ping frames. Close gracefully when the broadcast channel is gone.
+#[cfg(feature = "server")]
 async fn handle_ws_socket(
     mut socket: ws::WebSocket,
     broadcast_tx: Option<broadcast::Sender<serde_json::Value>>,
@@ -601,6 +636,7 @@ async fn handle_ws_socket(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Find an HTTP or Webhook source by its URL path component.
+#[cfg(feature = "server")]
 fn find_http_source_by_path<'a>(
     config: &'a crate::config::Config,
     path: &str,
@@ -611,6 +647,7 @@ fn find_http_source_by_path<'a>(
     })
 }
 
+#[cfg(feature = "server")]
 fn source_path_from_uri_path(path: &str, prefix: &str) -> Option<String> {
     let prefix = format!("/{}", prefix.trim_matches('/'));
     path.strip_prefix(&prefix)
@@ -620,6 +657,7 @@ fn source_path_from_uri_path(path: &str, prefix: &str) -> Option<String> {
 }
 
 /// POST /{prefix}/pipelines/{pipeline_id}/resume — resume a stopped pipeline.
+#[cfg(feature = "server")]
 async fn resume_pipeline_handler(
     State(state): State<AppState>,
     Path(pipeline_id): Path<String>,
@@ -653,6 +691,7 @@ async fn resume_pipeline_handler(
 }
 
 /// Constant-time byte comparison to avoid timing side-channels on HMAC.
+#[cfg(feature = "server")]
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;

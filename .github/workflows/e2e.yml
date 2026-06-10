@@ -5,7 +5,8 @@ on:
     branches: [main]
   workflow_dispatch:
 
-permissions: read-all
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -16,21 +17,29 @@ jobs:
     name: E2E (Docker Compose)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install host dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq sqlite3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
 
       - name: Build bria image
-        run: docker build -t bria:e2e .
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          tags: bria:e2e
+          load: true
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Start shared infra
         working-directory: tests/e2e
         run: ./run.sh --infra-up
 
-      # ── Happy-path and recovery scenarios ──
-      - name: Run e2e (happy-path)
+      - name: Run e2e
         working-directory: tests/e2e
         run: |
           scenarios=(
@@ -48,43 +57,25 @@ jobs:
             http-queue
             http-webhook
             http-pg-recovery
-          )
-          failed=0
-          for s in "${scenarios[@]}"; do
-            echo "::group::$s"
-            if ./run.sh "$s"; then
-              echo "  PASS"
-            else
-              echo "  FAIL"
-              failed=1
-            fi
-            echo "::endgroup::"
-          done
-          exit $failed
-
-      # ── Failure and edge-case scenarios ──
-      - name: Run e2e (failure/recovery)
-        working-directory: tests/e2e
-        run: |
-          scenarios=(
             http-nonzero
             http-413
             http-cancel
             http-condition-false
             webhook-hmac-401
           )
+
           failed=0
           for s in "${scenarios[@]}"; do
             echo "::group::$s"
             if ./run.sh "$s"; then
-              echo "  PASS"
+              echo "PASS"
             else
-              echo "  FAIL"
+              echo "FAIL"
               failed=1
             fi
             echo "::endgroup::"
           done
-          exit $failed
+          exit "$failed"
 
       - name: Tear down shared infra
         if: always()

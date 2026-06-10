@@ -137,6 +137,104 @@ impl Config {
             }
         }
 
+        // Validate feature availability
+        #[cfg(not(feature = "cron"))]
+        for source in &self.sources {
+            if source.r#type == SourceType::Cron {
+                errors.push(format!(
+                    "Source '{}' type 'cron' requires the 'cron' feature",
+                    source.id
+                ));
+            }
+        }
+        #[cfg(not(feature = "amqp"))]
+        {
+            for source in &self.sources {
+                if source.r#type == SourceType::Queue {
+                    errors.push(format!(
+                        "Source '{}' type 'queue' requires the 'amqp' feature",
+                        source.id
+                    ));
+                }
+            }
+            for sink in &self.sinks {
+                if sink.r#type == SinkType::Queue {
+                    errors.push(format!(
+                        "Sink '{}' type 'queue' requires the 'amqp' feature",
+                        sink.id
+                    ));
+                }
+            }
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            for source in &self.sources {
+                if source.r#type == SourceType::Sqlite {
+                    errors.push(format!(
+                        "Source '{}' type 'sqlite' requires the 'sqlite' feature",
+                        source.id
+                    ));
+                }
+            }
+            for sink in &self.sinks {
+                if sink.r#type == SinkType::Sqlite {
+                    errors.push(format!(
+                        "Sink '{}' type 'sqlite' requires the 'sqlite' feature",
+                        sink.id
+                    ));
+                }
+            }
+            if self.global.state.backend == "sqlite" {
+                errors.push("State backend 'sqlite' requires the 'sqlite' feature".to_string());
+            }
+        }
+        #[cfg(not(feature = "postgres"))]
+        {
+            for source in &self.sources {
+                if source.r#type == SourceType::Pg {
+                    errors.push(format!(
+                        "Source '{}' type 'pg' requires the 'postgres' feature",
+                        source.id
+                    ));
+                }
+            }
+            for sink in &self.sinks {
+                if sink.r#type == SinkType::Pg {
+                    errors.push(format!(
+                        "Sink '{}' type 'pg' requires the 'postgres' feature",
+                        sink.id
+                    ));
+                }
+            }
+            if self.global.state.backend == "pg" {
+                errors.push("State backend 'pg' requires the 'postgres' feature".to_string());
+            }
+        }
+        #[cfg(not(feature = "webhook"))]
+        for sink in &self.sinks {
+            if sink.r#type == SinkType::Webhook {
+                errors.push(format!(
+                    "Sink '{}' type 'webhook' requires the 'webhook' feature",
+                    sink.id
+                ));
+            }
+        }
+        #[cfg(not(feature = "wasm"))]
+        for task in &self.tasks {
+            if task.driver == "wasm" {
+                errors.push(format!(
+                    "Task '{}' driver 'wasm' requires the 'wasm' feature",
+                    task.id
+                ));
+            }
+        }
+        #[cfg(not(feature = "server"))]
+        {
+            if self.server.enabled {
+                errors.push("server.enabled = true requires the 'server' feature".to_string());
+            }
+        }
+
         // Validate sink references exist
         for pipeline in &self.pipelines {
             // Pipeline-level sinks

@@ -35,6 +35,7 @@ pub fn quote_ident(kind: &str, name: &str) -> Result<String> {
     Ok(format!("\"{}\"", name.replace('"', "\"\"")))
 }
 
+#[cfg(feature = "amqp")]
 pub fn amqp_url_with_credentials(url: &str, username: &str, password: &str) -> Result<String> {
     if username.is_empty() && password.is_empty() {
         return Ok(url.to_string());
