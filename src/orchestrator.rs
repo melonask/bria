@@ -89,34 +89,70 @@ impl Orchestrator {
                 crate::config::SourceType::Cron => {
                     let source = source.clone();
                     tokio::spawn(async move {
+                        #[cfg(feature = "cron")]
                         if let Err(e) = crate::sources::run_cron_source_inline(&source, &tx).await {
                             tracing::error!("Cron source '{}' error: {e}", source.id);
+                        }
+                        #[cfg(not(feature = "cron"))]
+                        {
+                            tracing::error!(
+                                "Cron source '{}' requires the 'cron' feature",
+                                source.id
+                            );
+                            let _ = tx; // silence unused warning
                         }
                     });
                 }
                 crate::config::SourceType::Queue => {
                     let source = source.clone();
                     tokio::spawn(async move {
+                        #[cfg(feature = "amqp")]
                         if let Err(e) = crate::sources::run_queue_source_inline(&source, &tx).await
                         {
                             tracing::error!("Queue source '{}' error: {e}", source.id);
+                        }
+                        #[cfg(not(feature = "amqp"))]
+                        {
+                            tracing::error!(
+                                "Queue source '{}' requires the 'amqp' feature",
+                                source.id
+                            );
+                            let _ = tx;
                         }
                     });
                 }
                 crate::config::SourceType::Pg => {
                     let source = source.clone();
                     tokio::spawn(async move {
+                        #[cfg(feature = "postgres")]
                         if let Err(e) = crate::sources::run_pg_source_inline(&source, &tx).await {
                             tracing::error!("PG source '{}' error: {e}", source.id);
+                        }
+                        #[cfg(not(feature = "postgres"))]
+                        {
+                            tracing::error!(
+                                "PG source '{}' requires the 'postgres' feature",
+                                source.id
+                            );
+                            let _ = tx;
                         }
                     });
                 }
                 crate::config::SourceType::Sqlite => {
                     let source = source.clone();
                     tokio::spawn(async move {
+                        #[cfg(feature = "sqlite")]
                         if let Err(e) = crate::sources::run_sqlite_source_inline(&source, &tx).await
                         {
                             tracing::error!("SQLite source '{}' error: {e}", source.id);
+                        }
+                        #[cfg(not(feature = "sqlite"))]
+                        {
+                            tracing::error!(
+                                "SQLite source '{}' requires the 'sqlite' feature",
+                                source.id
+                            );
+                            let _ = tx;
                         }
                     });
                 }

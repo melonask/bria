@@ -35,22 +35,7 @@ ALL_SCENARIOS=("${HAPPY_PATH_SCENARIOS[@]}" "${FAILURE_SCENARIOS[@]}")
 # ── --infra-up ────────────────────────────────────────────────────────────────
 if [ "${1:-}" = "--infra-up" ]; then
     echo "=== Starting shared infra ==="
-    $INFRA_COMPOSE up -d --quiet-pull
-    echo "=== Waiting for postgres ==="
-    for i in $(seq 1 30); do
-        if $INFRA_COMPOSE exec -T postgres pg_isready -U bria -d bria > /dev/null 2>&1; then break; fi
-        sleep 1
-    done
-    echo "=== Waiting for rabbitmq ==="
-    for i in $(seq 1 30); do
-        if $INFRA_COMPOSE exec -T rabbitmq rabbitmq-diagnostics -q ping > /dev/null 2>&1; then break; fi
-        sleep 1
-    done
-    echo "=== Waiting for amqp-helper ==="
-    for i in $(seq 1 30); do
-        if $INFRA_COMPOSE exec -T amqp-helper python3 -c 'import pika' > /dev/null 2>&1; then break; fi
-        sleep 1
-    done
+    $INFRA_COMPOSE up -d --quiet-pull --wait --wait-timeout 60
     echo "=== Infra ready ==="
     exit 0
 fi
@@ -168,24 +153,13 @@ reset_pg
 echo "=== Starting bria ==="
 $BRIA_COMPOSE up -d
 
-echo "=== Waiting for bria healthy ==="
-for i in $(seq 1 20); do
-    if curl -sS "${BRIA_E2E_BASE_URL}/ping" 2>/dev/null | grep -q pong; then
-        echo "Bria ready after ${i}s"
+echo "=== Waiting for bria HTTP server ==="
+for i in $(seq 1 50); do
+    if curl -sS -H "X-Bria-Api-Key: ${BRIA_E2E_API_KEY}" "${BRIA_E2E_BASE_URL}/ping" 2>/dev/null | grep -q pong; then
         break
     fi
-    sleep 1
+    sleep 0.2
 done
-
-# Wait for amqp-helper pika import if needed (already installed; this is near-instant)
-case "$SCENARIO" in
-    queue-file|http-queue)
-        for i in $(seq 1 10); do
-            if $INFRA_COMPOSE exec -T amqp-helper python3 -c 'import pika' 2>/dev/null; then break; fi
-            sleep 1
-        done
-        ;;
-esac
 
 # Truncate stale result files for cron
 case "$SCENARIO" in
@@ -385,7 +359,7 @@ case "$SCENARIO" in
         ;;
 
     cron-file)
-        echo "Waiting for cron tick (schedule every 5s)..."
+        echo "Waiting for cron tick (schedule every 1s)..."
         ;;
 
     pg-pg)
@@ -488,8 +462,8 @@ case "$SCENARIO" in
         ;;
 
     cron-file)
-        # cron fires every 5s so we need up to ~10s after bria start
-        for i in $(seq 1 20); do
+        # cron fires every 1s so 10s is plenty
+        for i in $(seq 1 10); do
             RESULT=$($BRIA_COMPOSE exec -T bria cat /tmp/bria/results.jsonl 2>/dev/null || cat tmp/bria/results.jsonl 2>/dev/null || true)
             if [ -n "$RESULT" ] && echo "$RESULT" | assert_jsonl_pipeline cron-file-pipeline success; then OK=1; break; fi
             sleep 1

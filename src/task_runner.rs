@@ -12,6 +12,7 @@ use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::template::TemplateEngine;
 
+#[cfg(feature = "wasm")]
 const WASM_PAGE_SIZE_BYTES: u64 = 65_536;
 const DIRECT_STDIN_MAX_BYTES: usize = 65_536;
 
@@ -41,9 +42,14 @@ pub async fn run_task(
         config::TaskDriverKind::Docker(task) => {
             run_docker(task, step_with, step_outputs, global_config, ctx, template).await
         }
+        #[cfg(feature = "wasm")]
         config::TaskDriverKind::Wasm(task) => {
             run_wasm(task, step_with, step_outputs, global_config, ctx, template).await
         }
+        #[cfg(not(feature = "wasm"))]
+        config::TaskDriverKind::Wasm(_task) => Err(Error::Unsupported(
+            "Task driver 'wasm' requires the 'wasm' feature".to_string(),
+        )),
     }
 }
 
@@ -665,6 +671,7 @@ async fn run_docker(
 }
 
 /// Execute a WebAssembly task using wasmtime 45.x WASIp1.
+#[cfg(feature = "wasm")]
 async fn run_wasm(
     task: &config::TaskConfig,
     step_with: Option<&config::StepWithConfig>,
@@ -925,6 +932,7 @@ async fn run_wasm(
     })
 }
 
+#[cfg(feature = "wasm")]
 fn create_wasm_engine(max_memory_pages: u32) -> Result<wasmtime::Engine> {
     let mut config = wasmtime::Config::new();
     config.consume_fuel(true);
@@ -936,6 +944,7 @@ fn create_wasm_engine(max_memory_pages: u32) -> Result<wasmtime::Engine> {
     Ok(engine)
 }
 
+#[cfg(feature = "wasm")]
 fn wasm_error_string(e: wasmtime::Error) -> String {
     let err_str = format!("{e:?}");
     if let Some(trap) = e.downcast_ref::<wasmtime::Trap>() {

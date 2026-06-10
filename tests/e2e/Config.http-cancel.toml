@@ -28,8 +28,8 @@ max_body_bytes = 1048576
 id = "sleeper"
 driver = "local"
 cmd = "sh"
-args = ["-c", "sleep 15"]
-timeout_secs = 30
+args = ["-c", "sleep 5"]
+timeout_secs = 10
 
 [tasks.stdout]
 mode = "capture"

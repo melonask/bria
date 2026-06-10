@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 ARG RUST_VERSION=1.96
 
 FROM rust:${RUST_VERSION}-slim-bookworm AS builder
@@ -8,19 +10,31 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY Cargo.toml Cargo.lock ./
-COPY src ./src
-RUN cargo build --release --locked --bin bria
+RUN mkdir -p src && echo 'fn main(){}' > src/main.rs
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo fetch --locked
+
+COPY src/ src/
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/tmp/cargo-target \
+    CARGO_TARGET_DIR=/tmp/cargo-target \
+    cargo build --release --locked --bin bria --features full \
+    && cp /tmp/cargo-target/release/bria /usr/local/bin/bria
 
 FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates sqlite3 nodejs npm \
+    && apt-get install -y --no-install-recommends ca-certificates sqlite3 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --create-home --home-dir /var/lib/bria --shell /usr/sbin/nologin bria \
     && mkdir -p /etc/bria /var/log/bria /tmp/bria \
     && chown -R bria:bria /var/lib/bria /var/log/bria /tmp/bria
 
-COPY --from=builder /usr/src/bria/target/release/bria /usr/local/bin/bria
+COPY --from=builder /usr/local/bin/bria /usr/local/bin/bria
 
 STOPSIGNAL SIGTERM
 ENV BRIA_CONFIG=/etc/bria/Config.toml

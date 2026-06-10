@@ -12,6 +12,14 @@ Bria is a Rust-based multi-pipeline job orchestrator. It ingests jobs from files
 cargo install bria
 ```
 
+The default install is intentionally lightweight and includes core file/local/Docker orchestration.
+Enable optional integrations only when needed, for example:
+
+```bash
+cargo install bria --features full
+cargo install bria --features server,webhook,sqlite
+```
+
 ```bash
 bria --config Config.toml
 ```

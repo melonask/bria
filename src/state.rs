@@ -2,8 +2,11 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 use sqlx::Row;
+#[cfg(feature = "postgres")]
 use sqlx::postgres::{PgPool, PgPoolOptions};
+#[cfg(feature = "sqlite")]
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 
 use crate::config::StateConfig;
@@ -57,14 +60,24 @@ pub trait StateStore: Send + Sync {
 pub async fn create_store(config: &StateConfig) -> Result<Box<dyn StateStore>> {
     match config.backend.as_str() {
         "memory" => Ok(Box::new(MemoryStore::new())),
+        #[cfg(feature = "sqlite")]
         "sqlite" => {
             let store = SqliteStateStore::new(&config.sqlite_path).await?;
             Ok(Box::new(store))
         }
+        #[cfg(not(feature = "sqlite"))]
+        "sqlite" => Err(crate::error::Error::Unsupported(
+            "State backend 'sqlite' requires the 'sqlite' feature".to_string(),
+        )),
+        #[cfg(feature = "postgres")]
         "pg" => {
             let store = PgStateStore::new(&config.pg_url).await?;
             Ok(Box::new(store))
         }
+        #[cfg(not(feature = "postgres"))]
+        "pg" => Err(crate::error::Error::Unsupported(
+            "State backend 'pg' requires the 'postgres' feature".to_string(),
+        )),
         other => Err(crate::error::Error::config(format!(
             "Unknown state backend: '{other}'. Supported: memory, sqlite, pg"
         ))),
@@ -151,6 +164,7 @@ impl StateStore for MemoryStore {
 // SQLite backend
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "sqlite")]
 const CREATE_SQLITE_JOB_STATE: &str = r#"
 CREATE TABLE IF NOT EXISTS bria_job_state (
     job_id          TEXT NOT NULL,
@@ -165,10 +179,12 @@ CREATE TABLE IF NOT EXISTS bria_job_state (
 );
 "#;
 
+#[cfg(feature = "sqlite")]
 pub struct SqliteStateStore {
     pool: SqlitePool,
 }
 
+#[cfg(feature = "sqlite")]
 impl SqliteStateStore {
     pub async fn new(path: &str) -> Result<Self> {
         let conn_str = format!("sqlite:{path}?mode=rwc");
@@ -183,6 +199,7 @@ impl SqliteStateStore {
     }
 }
 
+#[cfg(feature = "sqlite")]
 #[async_trait]
 impl StateStore for SqliteStateStore {
     async fn record_queued(&self, job: &Job, pipeline_id: &str) -> Result<()> {
@@ -289,6 +306,7 @@ impl StateStore for SqliteStateStore {
 // PostgreSQL backend
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "postgres")]
 const CREATE_PG_JOB_STATE: &str = r#"
 CREATE TABLE IF NOT EXISTS bria_job_state (
     job_id          TEXT NOT NULL,
@@ -303,10 +321,12 @@ CREATE TABLE IF NOT EXISTS bria_job_state (
 );
 "#;
 
+#[cfg(feature = "postgres")]
 pub struct PgStateStore {
     pool: PgPool,
 }
 
+#[cfg(feature = "postgres")]
 impl PgStateStore {
     pub async fn new(url: &str) -> Result<Self> {
         if url.is_empty() {
@@ -323,6 +343,7 @@ impl PgStateStore {
     }
 }
 
+#[cfg(feature = "postgres")]
 #[async_trait]
 impl StateStore for PgStateStore {
     async fn record_queued(&self, job: &Job, pipeline_id: &str) -> Result<()> {

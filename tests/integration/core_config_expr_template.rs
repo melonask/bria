@@ -300,6 +300,7 @@ path = "u.jsonl"
     assert!(err.to_string().contains("global.state.pg_url"));
 }
 
+#[cfg(feature = "postgres")]
 #[test]
 fn validate_accepts_pg_backend_with_pg_url() {
     let cfg = parse(
@@ -849,6 +850,7 @@ flags = ["--rm"]
         .expect("docker task with config should be valid");
 }
 
+#[cfg(feature = "wasm")]
 #[test]
 fn validate_accepts_wasm_task_with_config() {
     let cfg = parse(
@@ -973,6 +975,7 @@ type = "sqlite"
     assert!(err.to_string().contains("requires a path"));
 }
 
+#[cfg(feature = "server")]
 #[test]
 fn validate_accepts_stream_sink_without_additional_requirements() {
     let cfg = parse(

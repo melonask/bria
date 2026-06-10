@@ -1,14 +1,21 @@
-use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::PathBuf;
+
+#[cfg(any(feature = "amqp", feature = "sqlite", feature = "postgres"))]
+use std::collections::HashMap;
+#[cfg(any(feature = "amqp", feature = "sqlite", feature = "postgres"))]
 use std::sync::Arc;
 
 use crate::config;
 use crate::context::{Context, PipelineResult, StepResult};
 use crate::error::{Error, Result};
 use crate::template::TemplateEngine;
-use crate::util::{amqp_url_with_credentials, quote_ident, validate_identifier};
+#[cfg(feature = "amqp")]
+use crate::util::amqp_url_with_credentials;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+use crate::util::{quote_ident, validate_identifier};
 
+#[cfg(feature = "amqp")]
 struct AmqpSinkClient {
     _connection: lapin::Connection,
     channel: lapin::Channel,
@@ -18,9 +25,13 @@ struct AmqpSinkClient {
 pub struct SinkDispatcher {
     config: crate::config::Config,
     template: TemplateEngine,
+    #[cfg(feature = "webhook")]
     http_client: reqwest::Client,
+    #[cfg(feature = "sqlite")]
     sqlite_pools: tokio::sync::Mutex<HashMap<String, sqlx::SqlitePool>>,
+    #[cfg(feature = "postgres")]
     pg_pools: tokio::sync::Mutex<HashMap<String, sqlx::PgPool>>,
+    #[cfg(feature = "amqp")]
     amqp_clients: tokio::sync::Mutex<HashMap<String, Arc<AmqpSinkClient>>>,
     /// Broadcast channel for stream sink (server push).
     broadcast_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
@@ -35,9 +46,13 @@ impl SinkDispatcher {
         Self {
             config,
             template,
+            #[cfg(feature = "webhook")]
             http_client: reqwest::Client::new(),
+            #[cfg(feature = "sqlite")]
             sqlite_pools: tokio::sync::Mutex::new(HashMap::new()),
+            #[cfg(feature = "postgres")]
             pg_pools: tokio::sync::Mutex::new(HashMap::new()),
+            #[cfg(feature = "amqp")]
             amqp_clients: tokio::sync::Mutex::new(HashMap::new()),
             broadcast_tx,
         }
@@ -185,11 +200,31 @@ impl SinkDispatcher {
     ) -> Result<()> {
         match sink.r#type {
             config::SinkType::File => self.send_to_file(sink, result, ctx).await,
+            #[cfg(feature = "webhook")]
             config::SinkType::Webhook => self.send_to_webhook(sink, result, ctx).await,
+            #[cfg(not(feature = "webhook"))]
+            config::SinkType::Webhook => Err(Error::Unsupported(
+                "Sink type 'webhook' requires the 'webhook' feature".to_string(),
+            )),
+            #[cfg(feature = "sqlite")]
             config::SinkType::Sqlite => self.send_to_sqlite(sink, result, ctx).await,
+            #[cfg(not(feature = "sqlite"))]
+            config::SinkType::Sqlite => Err(Error::Unsupported(
+                "Sink type 'sqlite' requires the 'sqlite' feature".to_string(),
+            )),
             config::SinkType::Stream => self.send_to_stream(sink, result, ctx).await,
+            #[cfg(feature = "amqp")]
             config::SinkType::Queue => self.send_to_queue(sink, result, ctx).await,
+            #[cfg(not(feature = "amqp"))]
+            config::SinkType::Queue => Err(Error::Unsupported(
+                "Sink type 'queue' requires the 'amqp' feature".to_string(),
+            )),
+            #[cfg(feature = "postgres")]
             config::SinkType::Pg => self.send_to_pg(sink, result, ctx).await,
+            #[cfg(not(feature = "postgres"))]
+            config::SinkType::Pg => Err(Error::Unsupported(
+                "Sink type 'pg' requires the 'postgres' feature".to_string(),
+            )),
         }
     }
 
@@ -237,6 +272,7 @@ impl SinkDispatcher {
         Ok(())
     }
 
+    #[cfg(feature = "webhook")]
     async fn send_to_webhook(
         &self,
         sink: &config::SinkConfig,
@@ -325,6 +361,7 @@ impl SinkDispatcher {
         }))
     }
 
+    #[cfg(feature = "sqlite")]
     async fn get_sqlite_pool(
         &self,
         sink: &config::SinkConfig,
@@ -351,6 +388,7 @@ impl SinkDispatcher {
         Ok(pool)
     }
 
+    #[cfg(feature = "postgres")]
     async fn get_pg_pool(
         &self,
         sink: &config::SinkConfig,
@@ -369,6 +407,7 @@ impl SinkDispatcher {
         Ok(pool)
     }
 
+    #[cfg(feature = "sqlite")]
     async fn send_to_sqlite(
         &self,
         sink: &config::SinkConfig,
@@ -445,6 +484,7 @@ impl SinkDispatcher {
         Ok(())
     }
 
+    #[cfg(feature = "amqp")]
     async fn get_amqp_channel(&self, sink: &config::SinkConfig) -> Result<lapin::Channel> {
         let mut clients = self.amqp_clients.lock().await;
         if let Some(client) = clients.get(&sink.id) {
@@ -483,6 +523,7 @@ impl SinkDispatcher {
         Ok(channel)
     }
 
+    #[cfg(feature = "amqp")]
     async fn send_to_queue(
         &self,
         sink: &config::SinkConfig,
@@ -569,6 +610,7 @@ impl SinkDispatcher {
         }))
     }
 
+    #[cfg(feature = "postgres")]
     async fn send_to_pg(
         &self,
         sink: &config::SinkConfig,
@@ -650,6 +692,7 @@ fn make_step_synthetic(
     }
 }
 
+#[cfg(feature = "sqlite")]
 async fn create_sqlite_result_table(
     sink: &config::SinkConfig,
     table: &config::TableSinkConfig,
@@ -693,6 +736,7 @@ async fn create_sqlite_result_table(
     Ok(())
 }
 
+#[cfg(feature = "postgres")]
 async fn create_pg_result_table(
     sink: &config::SinkConfig,
     table: &config::TableSinkConfig,
@@ -736,6 +780,7 @@ async fn create_pg_result_table(
     Ok(())
 }
 
+#[cfg(feature = "webhook")]
 fn compute_hmac(secret: &str, message: &str) -> String {
     use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256;
@@ -756,6 +801,7 @@ fn log_sink_error(sink: &config::SinkConfig, error: &Error) {
     );
 }
 
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 fn validate_table_sink_identifiers(table: &config::TableSinkConfig) -> Result<()> {
     validate_identifier("table", &table.name)?;
     validate_identifier("column", &table.columns.result_id)?;

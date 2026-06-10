@@ -5,18 +5,22 @@ description: Bria is a Rust-based multi-pipeline job orchestrator. It ingests jo
 
 Bria is a Rust-based multi-pipeline job orchestrator. It ingests jobs from files, HTTP/webhooks, AMQP, cron, PostgreSQL, or SQLite, runs local, Docker, or WebAssembly tasks, and emits results to files, webhooks, AMQP, databases, or live streams.
 
-> **Briareus** — One Command. Hundred Actions.
-
 ## Quick start
 
 ```bash
 cargo install bria
 ```
 
+The default install is intentionally lightweight and includes core file/local/Docker orchestration.
+Enable optional integrations only when needed, for example:
+
 ```bash
-cp Config.example.toml Config.toml
+cargo install bria --features full
+cargo install bria --features server,webhook,sqlite
+```
+
+```bash
 bria --config Config.toml
-bria ping
 ```
 
 ## CLI
@@ -234,6 +238,15 @@ docker run --rm -p 4000:4000 \
   -v "$PWD/Config.toml:/etc/bria/Config.toml:ro" \
   ghcr.io/melonask/bria:latest
 ```
+
+The default `CMD` passes `--config /etc/bria/Config.toml`.  Override it to run a
+one-shot check or the built-in health command:
+
+```bash
+docker run --rm bria:latest ping          # always works, no config needed
+```
+
+The image includes an OCI `HEALTHCHECK` that calls `bria ping` every 30 s.
 
 E2E Docker Compose files and run script live in `tests/e2e/` — see `tests/e2e/README.md`.
 
