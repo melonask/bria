@@ -9,12 +9,12 @@ RUN apt-get update \
 
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-RUN cargo build --release --bin bria
+RUN cargo build --release --locked --bin bria
 
 FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates sqlite3 \
+    && apt-get install -y --no-install-recommends ca-certificates sqlite3 nodejs npm \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --create-home --home-dir /var/lib/bria --shell /usr/sbin/nologin bria \
     && mkdir -p /etc/bria /var/log/bria /tmp/bria \
