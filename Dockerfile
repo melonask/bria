@@ -10,12 +10,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir -p src && echo 'fn main(){}' > src/main.rs
-
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    cargo fetch
-
 COPY src/ src/
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
