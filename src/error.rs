@@ -71,7 +71,7 @@ pub enum Error {
 
     #[cfg(any(feature = "sqlite", feature = "postgres"))]
     #[error("Database migration error: {0}")]
-    Migration(#[from] sqlx::migrate::MigrateError),
+    Migration(Box<dyn std::error::Error + Send + Sync + 'static>),
 
     #[cfg(feature = "amqp")]
     #[error("AMQP error: {0}")]

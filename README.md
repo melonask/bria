@@ -1,6 +1,6 @@
 # Bria
 
-<img align="right" src="https://raw.githubusercontent.com/melonask/bria/refs/heads/main/logo.svg" alt="Bria is a Rust-based multi-pipeline job orchestrator" width="160" />
+<img align="right" src="https://raw.githubusercontent.com/melonask/bria/refs/heads/main/logo.svg" alt="Bria is a Rust-based multi-pipeline job orchestrator" width="200" />
 
 > **Briareus** — One Command. Hundred Actions.
 
@@ -12,12 +12,13 @@ Bria is a Rust-based multi-pipeline job orchestrator. It ingests jobs from files
 cargo install bria
 ```
 
-The default install is intentionally lightweight and includes core file/local/Docker orchestration.
-Enable optional integrations only when needed, for example:
+The default install includes core file/local/Docker orchestration and SQLite state support.
+Enable optional integrations only when needed:
 
 ```bash
 cargo install bria --features full
 cargo install bria --features server,webhook,sqlite
+cargo install bria --features pg,amqp
 ```
 
 ```bash
@@ -33,94 +34,159 @@ bria --config Config.toml
 
 `--config` can also be supplied with `BRIA_CONFIG`. The default is `Config.toml`.
 
+## Feature flags
+
+| Feature | Default | Description |
+|---|---|---|
+| `sqlite` | **yes** | SQLite state, source, and sink support. |
+| `postgres` / `pg` | — | PostgreSQL state, source, and sink support. `pg` is an alias for `postgres`. |
+| `server` | — | HTTP control plane, HTTP sources, streams, dashboard. |
+| `webhook` | — | Outbound webhook sinks. |
+| `amqp` | — | AMQP queue sources and sinks. |
+| `wasm` | — | WebAssembly task runtime. |
+| `cron` | — | Cron source support. |
+| `full` | — | All integrations (`server`, `webhook`, `sqlite`, `postgres`, `amqp`, `wasm`, `cron`). |
+
 ## Configuration model
+
+Bria uses a universal namespaced config format. Shared root sections define reusable profiles; Bria's behavior lives under `[bria]`.
+
+### Shared root sections Bria reads
 
 | Section | Purpose |
 |---|---|
-| `[global]` | Runtime, logging, state, retry, and timeout defaults. |
-| `[server]` | Optional HTTP control plane for HTTP/webhook sources and streams. |
-| `[[sources]]` | Inputs that produce jobs. |
-| `[[tasks]]` | Reusable task definitions. |
-| `[[sinks]]` | Outputs that receive pipeline results. |
-| `[[pipelines]]` | DAGs connecting sources, tasks, and sinks. |
+| `version` | Schema version (1). |
+| `[log]` | Log level, format, file defaults (inherited by Bria when not overridden). |
+| `[runtime]` | Worker threads, shutdown, tmp dir, payload limits. |
+| `[http]` | HTTP bind, prefix, API key defaults. |
+| `[stores.<id>]` | Database profiles for state/sources/sinks. Resolved by `store = "<id>"`. |
+| `[paths.<id>]` | File path profiles for sources/sinks. Resolved by `path_ref = "<id>"`. |
+| `[transports.amqp.<id>]` | AMQP broker profiles for queue sources/sinks. Resolved by `transport = "<id>"`. |
+| `[transports.webhook.<id>]` | Webhook destination profiles. Resolved by `transport = "<id>"`. |
+| `[transports.http.<id>]` | HTTP client profiles for HTTP sources. Resolved by `transport = "<id>"`. |
+| `[objects.<id>]` | Object store locations (future). |
 
-Environment variables in the form `${VAR_NAME}` are resolved during config loading. Missing variables fail fast.
+Bria ignores `[ladon]`, `[pano]`, and `[oracles]` namespaces.
+
+### Package-specific: `[bria]`
+
+| Section | Purpose |
+|---|---|
+| `[bria.global]` | Runtime, logging, state, retry, and timeout defaults. |
+| `[bria.server]` | Optional HTTP control plane. |
+| `[[bria.sources]]` | Inputs that produce jobs. |
+| `[[bria.tasks]]` | Reusable task definitions. |
+| `[[bria.sinks]]` | Outputs that receive pipeline results. |
+| `[[bria.pipelines]]` | DAGs connecting sources, tasks, and sinks. |
+
+## Universal integration config
+
+Shared profiles avoid duplicate configuration. Bria resolves them at load time:
+
+```toml
+[stores.bria]
+driver = "sqlite"
+url = "sqlite://data/bria/bria-state.db"
+
+[paths.bria_jobs]
+path = "data/bria/jobs/images.jsonl"
+format = "jsonl"
+
+[transports.amqp.local]
+url = "amqp://localhost:5672"
+```
+
+Bria references them from `[bria]`:
+
+```toml
+[bria.global.state]
+store = "bria"
+
+[[bria.sources]]
+id = "image-file"
+type = "file"
+path_ref = "bria_jobs"
+
+[[bria.sources]]
+id = "queue-jobs"
+type = "queue"
+transport = "local"
+```
+
+Explicit package-local values override shared profile defaults.
 
 ## Parameters
 
-### Global
+### Global: `[bria.global]`
 
 | Key | Default | Description |
 |---|---:|---|
-| `worker_threads` | `0` | Tokio worker threads; `0` uses logical CPUs. |
+| `worker_threads` | `0` (from `[runtime]`) | Tokio worker threads; `0` uses logical CPUs. |
 | `shutdown_timeout_secs` | `30` | Orchestrator shutdown timeout. |
-| `tmp_dir` | OS temp dir | Temporary file directory. |
+| `tmp_dir` | `data/bria/tmp` | Temporary file directory. |
 | `max_payload_bytes` | `10485760` | Maximum job payload size. |
-| `cancel_signal_ttl_secs` | `3600` | How long cancellation signals are retained. |
+| `cancel_signal_ttl_secs` | `3600` | Cancel signal retention. |
 
-### Logging: `[global.log]`
+### Logging: `[bria.global.log]`
 
 | Key | Default | Values |
 |---|---|---|
-| `level` | `info` | `trace`, `debug`, `info`, `warn`, `error` |
-| `format` | auto | `text`, `json`; auto uses text on TTY and JSON otherwise |
+| `level` | `info` (from `[log]`) | `trace`, `debug`, `info`, `warn`, `error` |
+| `format` | auto | `text`, `json`; auto uses text on TTY, JSON otherwise |
 | `file` | `""` | Optional log file path |
 
-### State: `[global.state]`
+### State: `[bria.global.state]`
 
 | Key | Default | Description |
 |---|---|---|
 | `backend` | `memory` | `memory`, `sqlite`, or `pg`. |
-| `sqlite_path` | `bria-state.db` | SQLite state database. |
+| `store` | — | Store id from `[stores]`. Resolves `sqlite_path`/`pg_url`. |
+| `sqlite_path` | `bria-state.db` | SQLite state database path. |
 | `pg_url` | `""` | Required when `backend = "pg"`. |
 
-State stores queued/running job records for restart recovery. Schema is created automatically on first use.
+State stores queued/running job records for restart recovery.
 
 ### Retry and timeout defaults
 
 | Section | Keys |
 |---|---|
-| `[global.retry]` | `max_attempts`, `base_delay_ms`, `max_delay_ms`, `jitter` |
-| `[global.timeout]` | `step_secs`, `action` (`kill`/`term`), `kill_grace_secs` |
+| `[bria.global.retry]` | `max_attempts`, `base_delay_ms`, `max_delay_ms`, `jitter` |
+| `[bria.global.timeout]` | `step_secs`, `action` (`kill`/`term`), `kill_grace_secs` |
 
 Retry precedence: step > task > global. Backoff uses exponential delay and random jitter.
 
-### Server: `[server]`
+### Server: `[bria.server]`
 
 | Key | Default | Description |
 |---|---:|---|
-| `enabled` | `false` | Enable HTTP server. |
-| `bind` | `0.0.0.0` | Bind address. |
+| `enabled` | `false` | Enable HTTP server. Requires `--features server`. |
+| `bind` | `0.0.0.0` (from `[http]`) | Bind address. |
 | `port` | `4000` | Listen port. |
-| `prefix` | `v1` | Route prefix. |
-| `api_key` | `""` | Optional API key for all routes. Use `Authorization: Bearer` or `X-Bria-Api-Key`. |
-| `dashboard` | `""` | Static dashboard directory. |
+| `prefix` | `v1` (from `[http]`) | Route prefix. |
+| `api_key` | `""` | API key. Use `Authorization: Bearer` or `X-Bria-Api-Key`. |
+| `dashboard_path_ref` | `""` | Path profile from `[paths]` for static dashboard. |
 | `shutdown_timeout_secs` | `5` | HTTP drain timeout. |
 | `max_body_bytes` | `52428800` | Server-wide body limit. |
 
-Routes: `GET /{prefix}/ping`, `POST /{prefix}/{source.path}`, `DELETE /{prefix}/{source.path}/{job_id}`, `POST /{prefix}/pipelines/{id}/resume`, plus configured SSE/WebSocket stream paths.
-
-### Sources
+### Sources: `[[bria.sources]]`
 
 | Type | Required | Important parameters |
 |---|---|---|
-| `file` | `path` | `poll_interval_secs`, `track_cursor`, `authoritative`, `id_field`, `max_body_bytes`, `labels` |
+| `file` | `path` or `path_ref` | `poll_interval_secs`, `track_cursor`, `authoritative`, `id_field`, `max_body_bytes`, `labels` |
 | `http` | `path`, `server.enabled=true` | `max_body_bytes`, `id_field`, `labels` |
 | `webhook` | `path`, `server.enabled=true` | `hmac_secret`, `hmac_header`, `ack_status`, `max_body_bytes` |
-| `queue` | `url`, `exchange` | `username`, `password`, `submit_routing_key`, `cancel_routing_key`, `reconnect_secs`, `qos_prefetch`, `consumer_tag` |
+| `queue` | `url` or `transport`, `exchange` | `username`, `password`, `submit_routing_key`, `cancel_routing_key`, `reconnect_secs`, `qos_prefetch`, `consumer_tag` |
 | `cron` | `schedule` | `tz`, `[sources.payload]`, `labels` |
-| `pg` | `url`, `[sources.table]` | `poll_interval_secs`, table column names/status values |
-| `sqlite` | `path`, `[sources.table]` | same table parameters as `pg` |
+| `pg` | `url` or `store`, `[sources.table]` | `poll_interval_secs`, table column names/status values |
+| `sqlite` | `path` or `store`, `[sources.table]` | same table parameters as `pg` |
 
-Table source columns: `id`, `payload`, `created_at`, `status`, `status_claimed_value`, `status_done_value`, `status_failed_value`.
-
-### Tasks
+### Tasks: `[[bria.tasks]]`
 
 | Key | Default | Description |
 |---|---|---|
 | `id` | required | Task identifier. |
 | `driver` | `local` | `local`, `docker`, or `wasm`. |
-| `cmd` | required | Command, image, or `.wasm` path. Supports templates. |
+| `cmd` | required | Command, image, or `.wasm` path. |
 | `args` | `[]` | Argument templates. |
 | `inherit_env` | `false` | Keep parent environment. |
 | `working_dir` | current dir | Child working directory. |
@@ -140,20 +206,18 @@ Driver-specific sections:
 | `[tasks.docker]` | `flags`, `mounts`, `pull` (`always`, `missing`, `never`) |
 | `[tasks.wasm]` | `dirs`, `max_memory_pages`, `fuel` |
 
-### Sinks
+### Sinks: `[[bria.sinks]]`
 
 | Type | Required | Parameters |
 |---|---|---|
-| `file` | `path` | `template` |
-| `webhook` | `url` | `secret`, `signature_header`, `content_type`, `max_retries`, `retry_base_ms`, `timeout_secs`, `headers` |
-| `queue` | `url`, `exchange` | `username`, `password`, `success_routing_key`, `failure_routing_key`, `reconnect_secs` |
-| `pg` | `url`, `[sinks.table]` | Result table and column names |
-| `sqlite` | `path`, `[sinks.table]` | Result table and column names |
+| `file` | `path` or `path_ref` | `template` |
+| `webhook` | `url` or `transport` | `secret`, `signature_header`, `content_type`, `max_retries`, `retry_base_ms`, `timeout_secs`, `headers` |
+| `queue` | `url` or `transport`, `exchange` | `username`, `password`, `success_routing_key`, `failure_routing_key`, `reconnect_secs` |
+| `pg` | `url` or `store`, `[sinks.table]` | Result table and column names |
+| `sqlite` | `path` or `store`, `[sinks.table]` | Result table and column names |
 | `stream` | `server.enabled=true` | `sse`, `websocket`, `ws_heartbeat_secs`, `sse_keepalive_secs`, `broadcast_capacity` |
 
-Table sink columns: `result_id`, `job_id`, `pipeline_id`, `step_id`, `occurred_at`, `exit_code`, `stdout`, `stderr`, `duration_ms`, `attempt`, `status`.
-
-### Pipelines and steps
+### Pipelines and steps: `[[bria.pipelines]]`
 
 | Key | Description |
 |---|---|
@@ -172,10 +236,8 @@ Step types:
 | Type | Required | Behavior |
 |---|---|---|
 | `process` | `task` | Runs a task. |
-| `map` | `[[pipelines.steps.set]]` | Mutates `job.payload` using CEL expressions. |
+| `map` | `[[steps.set]]` | Mutates `job.payload` using CEL expressions. |
 | `condition` | `expr` | On false, `action = "fail"`, `"skip_to"`, or `"emit"`. |
-
-Step parameters include `depends_on`, `[with]` overrides, `[outputs]`, `[retry]`, `[failure]`, `sinks`, and `[[routing]]` conditional sinks.
 
 ## Templates and expressions
 
@@ -184,7 +246,7 @@ Templates use MiniJinja and can access `job.*`, `steps.*`, `env.*`, `now`, `now_
 CEL expressions can read `job.*`, `steps.*`, and `pipeline.*`:
 
 ```toml
-[[pipelines.steps.set]]
+[[bria.pipelines.steps.set]]
 target = "job.payload.output_url"
 expr = '"s3://" + job.payload.bucket + "/" + job.payload.key'
 ```
@@ -192,33 +254,33 @@ expr = '"s3://" + job.payload.bucket + "/" + job.payload.key'
 ## Example: HTTP job to local task and file sink
 
 ```toml
-[server]
+[bria.server]
 enabled = true
 port = 4000
 
-[[sources]]
+[[bria.sources]]
 id = "api"
 type = "http"
 path = "jobs"
 id_field = "id"
 
-[[tasks]]
+[[bria.tasks]]
 id = "hello"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf '{\"message\":\"hello %s\"}' \"$1\"", "sh", "{{job.payload.name}}"]
 
-[[sinks]]
+[[bria.sinks]]
 id = "results"
 type = "file"
 path = "results.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "hello-pipeline"
 source = "api"
 sinks = ["results"]
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "hello"
@@ -232,6 +294,36 @@ curl -X POST http://localhost:4000/v1/jobs \
   -d '{"id":"job-1","name":"Bria"}'
 ```
 
+## Database backends
+
+SQLite is the default. Use `[stores.bria]` for state/source/sink. PostgreSQL requires `--features pg` or `--features postgres`:
+
+```toml
+[stores.bria]
+driver = "postgres"
+url = "${DATABASE_URL}"
+
+[bria.global.state]
+backend = "pg"
+store = "bria"
+```
+
+## Path and transport profiles
+
+Bria supports:
+- `path_ref` for file sources/sinks, resolving `[paths.<id>]`
+- `transport` for AMQP/queue sources/sinks, resolving `[transports.amqp.<id>]`
+- `transport` for webhook sinks, resolving `[transports.webhook.<id>]`
+- `store` for database sources/sinks/state, resolving `[stores.<id>]`
+
+The profile provides defaults only. Direct package-local values override profile values.
+
+## Environment variables
+
+Config values support both forms:
+- `${VAR_NAME}` — required; config load fails if unset
+- `${VAR_NAME:-default_value}` — optional; uses default if unset
+
 ## Docker
 
 ```bash
@@ -240,30 +332,18 @@ docker run --rm -p 4000:4000 \
   ghcr.io/melonask/bria:latest
 ```
 
-The default `CMD` passes `--config /etc/bria/Config.toml`.  Override it to run a
-one-shot check or the built-in health command:
+The default `CMD` passes `--config /etc/bria/Config.toml`. Override it:
 
 ```bash
-docker run --rm bria:latest ping          # always works, no config needed
+docker run --rm bria:latest ping
 ```
 
-The image includes an OCI `HEALTHCHECK` that calls `bria ping` every 30 s.
+## Development
 
-E2E Docker Compose files and run script live in `tests/e2e/` — see `tests/e2e/README.md`.
-
-## Developer functions and exported API
-
-| Item | Purpose |
-|---|---|
-| `Config::load_from_path` | Load TOML with environment substitution. |
-| `Config::from_str_with_env` | Parse TOML string with `${VAR}` expansion. |
-| `Config::validate` | Validate references and type-specific requirements. |
-| `Config::get_task`, `Config::get_sink` | Lookup helpers. |
-| `Orchestrator::new` | Initialize logging and state store. |
-| `Orchestrator::run` | Start sources, server, routers, workers, and sinks. |
-| `run_pipeline_once` | Execute one pipeline in tests or embedded use. |
-| `create_store` | Create memory/SQLite/PostgreSQL state store. |
-| `StateStore` | Trait for queued/running/completed state and recovery. |
+```bash
+cargo check --all-features
+cargo test --all-features
+```
 
 ## Testing
 
@@ -274,12 +354,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 
 # End-to-end scenarios (requires Docker)
-cd tests/e2e
-./run.sh --all                    # build, run all 19 scenarios (~6 min), tear down
-./run.sh --infra-up               # start shared infra (postgres, rabbitmq, etc.)
-./run.sh http-pg                  # run a single scenario
-./run.sh --infra-down             # tear down shared infra
-# See tests/e2e/README.md for the full scenario list and architecture
+cd tests/e2e && ./run.sh --all
 ```
 
 ## License

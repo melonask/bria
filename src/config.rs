@@ -6,9 +6,9 @@ use std::sync::OnceLock;
 
 use crate::error::{Error, Result};
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Root configuration
-// ─────────────────────────────────────────────────────────────────────────────
+// =============================================================================
+// Public Config — the shape consumers expect (unchanged)
+// =============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -28,7 +28,8 @@ pub struct Config {
 
 impl Config {
     /// Load configuration from a file path.
-    /// Performs `${VAR}` environment substitution before TOML parsing.
+    /// Parses the merged universal TOML: extracts [bria] namespace, reads
+    /// shared root sections, ignores unrelated package namespaces.
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let raw = std::fs::read_to_string(path)
@@ -36,12 +37,60 @@ impl Config {
         Self::from_str_with_env(&raw)
     }
 
-    /// Parse configuration from a TOML string with ${VAR} substitution.
+    /// Parse configuration from a merged universal TOML string with ${VAR} and
+    /// ${VAR:-default} environment substitution.
+    ///
+    /// If the parsed TOML has no `[bria]` section at the root, the entire
+    /// content is treated as the `[bria]` namespace for developer/test
+    /// convenience. The published config format always uses the explicit
+    /// `[bria]` namespace.
     pub fn from_str_with_env(raw: &str) -> Result<Self> {
         let resolved = substitute_env(raw)?;
-        let config: Config = toml::from_str(&resolved)
+
+        // Parse into a raw Value tree first for flexibility
+        let mut val: toml::Value = toml::from_str(&resolved)
             .map_err(|e| Error::config(format!("TOML parse error: {}", e)))?;
-        Ok(config)
+
+        // If there's no explicit [bria], inject everything into [bria]
+        let table = val
+            .as_table_mut()
+            .ok_or_else(|| Error::config("TOML must be a table at the root".to_string()))?;
+
+        if !table.contains_key("bria") {
+            // Extract known shared root sections and put the rest under [bria]
+            let known_shared: &[&str] = &[
+                "version",
+                "meta",
+                "log",
+                "runtime",
+                "http",
+                "stores",
+                "transports",
+                "paths",
+                "objects",
+                "chains",
+                "assets",
+                "ladon",
+                "pano",
+                "oracles",
+            ];
+            let mut bria_table = toml::value::Table::new();
+            let keys: Vec<String> = table.keys().cloned().collect();
+            for key in keys {
+                if !known_shared.contains(&key.as_str()) {
+                    if let Some(v) = table.remove(&key) {
+                        bria_table.insert(key, v);
+                    }
+                }
+            }
+            if !bria_table.is_empty() {
+                table.insert("bria".to_string(), toml::Value::Table(bria_table));
+            }
+        }
+
+        let universal = UniversalConfig::deserialize(val.clone())
+            .map_err(|e| Error::config(format!("TOML deserialization error: {}", e)))?;
+        universal.into_config()
     }
 
     /// Validate the configuration for consistency, references, and correctness.
@@ -326,9 +375,1289 @@ impl Config {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Global configuration
-// ─────────────────────────────────────────────────────────────────────────────
+// =============================================================================
+// Universal config parsing layer
+// =============================================================================
+
+/// Parsed representation of the merged universal TOML.
+/// Ignores [ladon], [pano], [oracles]; accepts only known shared root sections
+/// and the [bria] namespace.  Unknown fields inside [bria] are rejected by
+/// the serde(deny_unknown_fields) on BriaConfig and its children.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)] // reject unknown ROOT-level tables
+struct UniversalConfig {
+    #[serde(default)]
+    version: Option<u64>,
+    #[serde(default)]
+    meta: Option<SharedMetaConfig>,
+    #[serde(default)]
+    log: Option<SharedLogConfig>,
+    #[serde(default)]
+    runtime: Option<SharedRuntimeConfig>,
+    #[serde(default)]
+    http: Option<SharedHttpConfig>,
+    #[serde(default)]
+    stores: HashMap<String, SharedStoreConfig>,
+    #[serde(default)]
+    transports: Option<SharedTransportsSection>,
+    #[serde(default)]
+    paths: HashMap<String, SharedPathConfig>,
+    #[serde(default)]
+    objects: HashMap<String, SharedObjectConfig>,
+    #[serde(default)]
+    chains: HashMap<String, SharedChainConfig>,
+    #[serde(default)]
+    assets: HashMap<String, SharedAssetConfig>,
+    #[serde(default)]
+    bria: BriaConfig,
+    // --- explicitly ignore other package namespaces ---
+    #[serde(default, skip_serializing)]
+    ladon: Option<serde::de::IgnoredAny>,
+    #[serde(default, skip_serializing)]
+    pano: Option<serde::de::IgnoredAny>,
+    #[serde(default, skip_serializing)]
+    oracles: Option<serde::de::IgnoredAny>,
+}
+
+impl UniversalConfig {
+    fn into_config(self) -> Result<Config> {
+        let bria = &self.bria;
+
+        // --- global ---
+        let runtime = self.runtime.as_ref();
+        let log = self.log.as_ref();
+
+        let mut global = GlobalConfig::default();
+
+        if let Some(ref bria_global) = bria.global {
+            if bria_global.worker_threads > 0 {
+                global.worker_threads = bria_global.worker_threads;
+            } else if let Some(ref r) = runtime {
+                global.worker_threads = r.worker_threads;
+            }
+            global.shutdown_timeout_secs = bria_global
+                .shutdown_timeout_secs
+                .unwrap_or_else(|| runtime.map(|r| r.shutdown_timeout_secs).unwrap_or(30));
+            if let Some(ref tmp) = bria_global.tmp_dir {
+                global.tmp_dir = PathBuf::from(tmp);
+            } else if let Some(ref r) = runtime {
+                if !r.tmp_dir.is_empty() {
+                    global.tmp_dir = PathBuf::from(&r.tmp_dir);
+                }
+            }
+            global.max_payload_bytes = bria_global.max_payload_bytes.unwrap_or_else(|| {
+                runtime
+                    .map(|r| r.max_payload_bytes)
+                    .unwrap_or(10 * 1024 * 1024)
+            });
+            global.cancel_signal_ttl_secs = bria_global.cancel_signal_ttl_secs.unwrap_or(3600);
+
+            // Log config
+            if let Some(ref bria_log) = bria_global.log {
+                global.log.level = bria_log.level.clone().unwrap_or_else(|| {
+                    log.and_then(|l| l.level.clone())
+                        .unwrap_or_else(|| "info".to_string())
+                });
+                global.log.format = bria_log
+                    .format
+                    .clone()
+                    .or_else(|| log.and_then(|l| l.format.clone()));
+                global.log.file = bria_log
+                    .file
+                    .clone()
+                    .unwrap_or_else(|| log.and_then(|l| l.file.clone()).unwrap_or_default());
+            } else if let Some(ref l) = log {
+                global.log.level = l.level.clone().unwrap_or_else(|| "info".to_string());
+                global.log.format = l.format.clone();
+                global.log.file = l.file.clone().unwrap_or_default();
+            }
+
+            // State config
+            if let Some(ref bria_state) = bria_global.state {
+                global.state.backend = bria_state
+                    .backend
+                    .clone()
+                    .unwrap_or_else(|| "memory".to_string());
+                global.state.sqlite_path = bria_state
+                    .sqlite_path
+                    .clone()
+                    .unwrap_or_else(|| "bria-state.db".to_string());
+                global.state.pg_url = bria_state.pg_url.clone().unwrap_or_default();
+                // Resolve store reference
+                if let Some(ref store_id) = bria_state.store {
+                    if let Some(store_cfg) = self.stores.get(store_id) {
+                        match store_cfg.driver.as_deref().unwrap_or("sqlite") {
+                            "sqlite" => {
+                                if global.state.sqlite_path.is_empty()
+                                    || global.state.sqlite_path == "bria-state.db"
+                                {
+                                    let path = sqlite_url_to_path(&store_cfg.url);
+                                    if !path.is_empty() {
+                                        global.state.sqlite_path = path;
+                                    }
+                                }
+                            }
+                            "postgres" | "pg" => {
+                                if global.state.pg_url.is_empty() {
+                                    global.state.pg_url = store_cfg.url.clone();
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
+            // Retry defaults
+            if let Some(ref retry) = bria_global.retry {
+                global.retry.max_attempts = retry.max_attempts.unwrap_or(0);
+                global.retry.base_delay_ms = retry.base_delay_ms.unwrap_or(1000);
+                global.retry.max_delay_ms = retry.max_delay_ms.unwrap_or(30000);
+                global.retry.jitter = retry.jitter.unwrap_or(0.2);
+            }
+            // Timeout defaults
+            if let Some(ref timeout) = bria_global.timeout {
+                global.timeout.step_secs = timeout.step_secs.unwrap_or(300);
+                global.timeout.action =
+                    timeout.action.clone().unwrap_or_else(|| "kill".to_string());
+                global.timeout.kill_grace_secs = timeout.kill_grace_secs.unwrap_or(5);
+            }
+        } else {
+            // Inherit shared root defaults when bria.global is absent
+            if let Some(ref r) = runtime {
+                global.worker_threads = r.worker_threads;
+                global.shutdown_timeout_secs = r.shutdown_timeout_secs;
+                if !r.tmp_dir.is_empty() {
+                    global.tmp_dir = PathBuf::from(&r.tmp_dir);
+                }
+                global.max_payload_bytes = r.max_payload_bytes;
+            }
+            if let Some(ref l) = log {
+                global.log.level = l.level.clone().unwrap_or_else(|| "info".to_string());
+                global.log.format = l.format.clone();
+                global.log.file = l.file.clone().unwrap_or_default();
+            }
+        }
+
+        // --- server ---
+        let http = self.http.as_ref();
+        let mut server = ServerConfig::default();
+
+        if let Some(ref bria_server) = bria.server {
+            server.enabled = bria_server.enabled.unwrap_or(false);
+            server.bind = bria_server.bind.clone().unwrap_or_else(|| {
+                http.map(|h| h.bind.clone())
+                    .flatten()
+                    .unwrap_or_else(|| "0.0.0.0".to_string())
+            });
+            server.port = bria_server.port.unwrap_or(4000);
+            server.prefix = bria_server.prefix.clone().unwrap_or_else(|| {
+                http.map(|h| h.prefix.clone())
+                    .flatten()
+                    .unwrap_or_else(|| "v1".to_string())
+            });
+            server.api_key = bria_server
+                .api_key
+                .clone()
+                .unwrap_or_else(|| http.and_then(|h| h.api_key.clone()).unwrap_or_default());
+            // Resolve dashboard_path_ref
+            if let Some(ref dashboard_ref) = bria_server.dashboard_path_ref {
+                if !dashboard_ref.is_empty() {
+                    if let Some(path_cfg) = self.paths.get(dashboard_ref) {
+                        server.dashboard = path_cfg.path.clone();
+                    } else {
+                        return Err(Error::config(format!(
+                            "bria.server.dashboard_path_ref '{}' not found in [paths]",
+                            dashboard_ref
+                        )));
+                    }
+                }
+            }
+            server.shutdown_timeout_secs = bria_server.shutdown_timeout_secs.unwrap_or(5);
+            server.max_body_bytes = bria_server.max_body_bytes.unwrap_or(52428800);
+        }
+
+        // --- sources ---
+        let mut sources: Vec<SourceConfig> = Vec::new();
+        for bria_src in &bria.sources {
+            let s = resolve_source(bria_src, &self.paths, &self.transports, &self.stores)?;
+            sources.push(s);
+        }
+
+        // --- tasks ---
+        let mut tasks: Vec<TaskConfig> = Vec::new();
+        for bria_task in &bria.tasks {
+            tasks.push(resolve_task(bria_task)?);
+        }
+
+        // --- sinks ---
+        let mut sinks: Vec<SinkConfig> = Vec::new();
+        let _sinks_len = bria.sinks.len();
+        for bria_sink in &bria.sinks {
+            let s = resolve_sink(bria_sink, &self.paths, &self.transports, &self.stores)?;
+            sinks.push(s);
+        }
+
+        // --- pipelines ---
+        let mut pipelines: Vec<PipelineConfig> = Vec::new();
+        for bria_pl in &bria.pipelines {
+            let mut pl = resolve_pipeline(bria_pl)?;
+            pl.resolve_sources();
+            pipelines.push(pl);
+        }
+
+        let config = Config {
+            global,
+            server,
+            sources,
+            tasks,
+            sinks,
+            pipelines,
+        };
+
+        Ok(config)
+    }
+}
+
+// =============================================================================
+// Shared root section structs
+// =============================================================================
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct SharedMetaConfig {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    environment: String,
+    #[serde(default)]
+    data_dir: String,
+    #[serde(default)]
+    profile: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct SharedLogConfig {
+    #[serde(default)]
+    level: Option<String>,
+    #[serde(default)]
+    format: Option<String>,
+    #[serde(default)]
+    file: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct SharedRuntimeConfig {
+    #[serde(default = "default_runtime_worker_threads")]
+    worker_threads: usize,
+    #[serde(default = "default_runtime_shutdown")]
+    shutdown_timeout_secs: u64,
+    #[serde(default)]
+    tmp_dir: String,
+    #[serde(default = "default_runtime_max_payload")]
+    max_payload_bytes: usize,
+}
+
+fn default_runtime_worker_threads() -> usize {
+    0
+}
+fn default_runtime_shutdown() -> u64 {
+    30
+}
+fn default_runtime_max_payload() -> usize {
+    10 * 1024 * 1024
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct SharedHttpConfig {
+    #[serde(default)]
+    user_agent: String,
+    #[serde(default)]
+    request_timeout_secs: u64,
+    #[serde(default)]
+    max_retries: u32,
+    #[serde(default)]
+    retry_backoff_ms: u64,
+    #[serde(default)]
+    bind: Option<String>,
+    #[serde(default)]
+    prefix: Option<String>,
+    #[serde(default)]
+    api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct SharedStoreConfig {
+    #[serde(default)]
+    driver: Option<String>,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    migrate: bool,
+    #[serde(default)]
+    connect_timeout_secs: u64,
+    #[serde(default)]
+    max_connections: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct SharedTransportsSection {
+    #[serde(default)]
+    amqp: HashMap<String, SharedTransportAmqpConfig>,
+    #[serde(default)]
+    webhook: HashMap<String, SharedTransportWebhookConfig>,
+    #[serde(default)]
+    http: HashMap<String, SharedTransportHttpConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct SharedTransportAmqpConfig {
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    username: String,
+    #[serde(default)]
+    password: String,
+    #[serde(default)]
+    virtual_host: String,
+    #[serde(default)]
+    reconnect_secs: u64,
+    #[serde(default)]
+    qos_prefetch: u16,
+    #[serde(default)]
+    tls: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct SharedTransportWebhookConfig {
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    method: String,
+    #[serde(default)]
+    auth_scheme: String,
+    #[serde(default)]
+    token: String,
+    #[serde(default)]
+    auth_header: String,
+    #[serde(default)]
+    timeout_secs: u64,
+    #[serde(default)]
+    max_retries: u32,
+    #[serde(default)]
+    retry_base_ms: u64,
+    #[serde(default)]
+    headers: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct SharedTransportHttpConfig {
+    #[serde(default)]
+    base_url: String,
+    #[serde(default)]
+    user_agent: String,
+    #[serde(default)]
+    timeout_secs: u64,
+    #[serde(default)]
+    max_retries: u32,
+    #[serde(default)]
+    retry_base_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct SharedPathConfig {
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    format: String,
+    #[serde(default)]
+    create_parent_dirs: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct SharedObjectConfig {
+    #[serde(default)]
+    driver: String,
+    #[serde(default)]
+    root: String,
+    #[serde(default)]
+    public_base_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct SharedChainConfig {
+    #[serde(default)]
+    family: String,
+    #[serde(default)]
+    caip2: String,
+    #[serde(default)]
+    native_symbol: String,
+    #[serde(default)]
+    rpc_urls: Vec<String>,
+    #[serde(default)]
+    confirmations: u32,
+    #[serde(default)]
+    derivation: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct SharedAssetConfig {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    chain: String,
+    #[serde(default)]
+    symbol: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    decimals: u32,
+    #[serde(default)]
+    contract: Option<String>,
+}
+
+// =============================================================================
+// Bria namespace structs — strict unknown-field rejection
+// =============================================================================
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct BriaConfig {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    global: Option<BriaGlobalConfig>,
+    #[serde(default)]
+    server: Option<BriaServerConfig>,
+    #[serde(default)]
+    sources: Vec<BriaSourceConfig>,
+    #[serde(default)]
+    tasks: Vec<BriaTaskConfig>,
+    #[serde(default)]
+    sinks: Vec<BriaSinkConfig>,
+    #[serde(default)]
+    pipelines: Vec<BriaPipelineConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct BriaGlobalConfig {
+    #[serde(default)]
+    worker_threads: usize,
+    #[serde(default)]
+    shutdown_timeout_secs: Option<u64>,
+    #[serde(default)]
+    tmp_dir: Option<String>,
+    #[serde(default)]
+    max_payload_bytes: Option<usize>,
+    #[serde(default)]
+    cancel_signal_ttl_secs: Option<u64>,
+    #[serde(default)]
+    log: Option<BriaLogConfig>,
+    #[serde(default)]
+    state: Option<BriaStateConfig>,
+    #[serde(default)]
+    retry: Option<BriaRetryConfig>,
+    #[serde(default)]
+    timeout: Option<BriaTimeoutConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct BriaLogConfig {
+    #[serde(default)]
+    level: Option<String>,
+    #[serde(default)]
+    format: Option<String>,
+    #[serde(default)]
+    file: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct BriaStateConfig {
+    #[serde(default)]
+    backend: Option<String>,
+    /// Store reference to [stores.<id>]
+    #[serde(default)]
+    store: Option<String>,
+    #[serde(default)]
+    sqlite_path: Option<String>,
+    #[serde(default)]
+    pg_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct BriaRetryConfig {
+    #[serde(default)]
+    max_attempts: Option<u32>,
+    #[serde(default)]
+    base_delay_ms: Option<u64>,
+    #[serde(default)]
+    max_delay_ms: Option<u64>,
+    #[serde(default)]
+    jitter: Option<f64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct BriaTimeoutConfig {
+    #[serde(default)]
+    step_secs: Option<u64>,
+    #[serde(default)]
+    action: Option<String>,
+    #[serde(default)]
+    kill_grace_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct BriaServerConfig {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    bind: Option<String>,
+    #[serde(default)]
+    port: Option<u16>,
+    #[serde(default)]
+    prefix: Option<String>,
+    #[serde(default)]
+    api_key: Option<String>,
+    #[serde(default)]
+    dashboard_path_ref: Option<String>,
+    #[serde(default)]
+    shutdown_timeout_secs: Option<u64>,
+    #[serde(default)]
+    max_body_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct BriaSourceConfig {
+    #[serde(default)]
+    id: String,
+    #[serde(rename = "type")]
+    #[serde(default)]
+    r#type: String,
+    #[serde(default)]
+    enabled: Option<bool>,
+    // Path reference
+    #[serde(default)]
+    path_ref: Option<String>,
+    // Direct path
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    poll_interval_secs: Option<u64>,
+    #[serde(default)]
+    track_cursor: Option<bool>,
+    #[serde(default)]
+    authoritative: Option<bool>,
+    #[serde(default)]
+    id_field: Option<String>,
+    #[serde(default)]
+    max_body_bytes: Option<usize>,
+    // AMQP transport reference
+    #[serde(default)]
+    transport: Option<String>,
+    // AMQP/Queue fields
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default)]
+    exchange: Option<String>,
+    #[serde(default)]
+    submit_routing_key: Option<String>,
+    #[serde(default)]
+    cancel_routing_key: Option<String>,
+    #[serde(default)]
+    reconnect_secs: Option<u64>,
+    #[serde(default)]
+    qos_prefetch: Option<u16>,
+    #[serde(default)]
+    consumer_tag: Option<String>,
+    // Webhook
+    #[serde(default)]
+    hmac_secret: Option<String>,
+    #[serde(default)]
+    hmac_header: Option<String>,
+    #[serde(default)]
+    ack_status: Option<u16>,
+    // Cron
+    #[serde(default)]
+    schedule: Option<String>,
+    #[serde(default)]
+    tz: Option<String>,
+    #[serde(default)]
+    labels: Option<HashMap<String, String>>,
+    #[serde(default)]
+    payload: Option<serde_json::Value>,
+    // Table (pg/sqlite)
+    #[serde(default)]
+    table: Option<BriaTableSourceConfig>,
+    // Store reference for pg/sqlite sources
+    #[serde(default)]
+    store: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct BriaTableSourceConfig {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    columns: Option<BriaTableSourceColumnsConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct BriaTableSourceColumnsConfig {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    payload: Option<String>,
+    #[serde(default)]
+    created_at: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    status_claimed_value: Option<String>,
+    #[serde(default)]
+    status_done_value: Option<String>,
+    #[serde(default)]
+    status_failed_value: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct BriaTaskConfig {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    driver: Option<String>,
+    #[serde(default)]
+    cmd: String,
+    #[serde(default)]
+    args: Option<Vec<String>>,
+    #[serde(default)]
+    inherit_env: Option<bool>,
+    #[serde(default)]
+    working_dir: Option<String>,
+    #[serde(default)]
+    success_exit_codes: Option<Vec<i32>>,
+    #[serde(default)]
+    timeout_secs: Option<u64>,
+    #[serde(default)]
+    timeout_action: Option<String>,
+    #[serde(default)]
+    kill_grace_secs: Option<u64>,
+    #[serde(default)]
+    env: Option<HashMap<String, String>>,
+    #[serde(default)]
+    stdin: Option<StdinConfig>,
+    #[serde(default)]
+    stdout: Option<StreamConfig>,
+    #[serde(default)]
+    stderr: Option<StreamConfig>,
+    #[serde(default)]
+    retry: Option<BriaTaskRetryConfig>,
+    #[serde(default)]
+    labels: Option<HashMap<String, String>>,
+    #[serde(default)]
+    docker: Option<DockerConfig>,
+    #[serde(default)]
+    wasm: Option<WasmConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct BriaTaskRetryConfig {
+    #[serde(default)]
+    max_attempts: Option<u32>,
+    #[serde(default)]
+    base_delay_ms: Option<u64>,
+    #[serde(default)]
+    max_delay_ms: Option<u64>,
+    #[serde(default)]
+    jitter: Option<f64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct BriaSinkConfig {
+    #[serde(default)]
+    id: String,
+    #[serde(rename = "type")]
+    #[serde(default)]
+    r#type: String,
+    #[serde(default)]
+    enabled: Option<bool>,
+    // File
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    path_ref: Option<String>,
+    #[serde(default)]
+    template: Option<String>,
+    // Webhook
+    #[serde(default)]
+    transport: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    secret: Option<String>,
+    #[serde(default)]
+    signature_header: Option<String>,
+    #[serde(default)]
+    content_type: Option<String>,
+    #[serde(default)]
+    max_retries: Option<u32>,
+    #[serde(default)]
+    retry_base_ms: Option<u64>,
+    #[serde(default)]
+    timeout_secs: Option<u64>,
+    #[serde(default)]
+    headers: Option<HashMap<String, String>>,
+    // Queue
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default)]
+    exchange: Option<String>,
+    #[serde(default)]
+    success_routing_key: Option<String>,
+    #[serde(default)]
+    failure_routing_key: Option<String>,
+    #[serde(default)]
+    reconnect_secs: Option<u64>,
+    // Stream
+    #[serde(default)]
+    sse: Option<String>,
+    #[serde(default)]
+    websocket: Option<String>,
+    #[serde(default)]
+    ws_heartbeat_secs: Option<u64>,
+    #[serde(default)]
+    sse_keepalive_secs: Option<u64>,
+    #[serde(default)]
+    broadcast_capacity: Option<usize>,
+    // Table
+    #[serde(default)]
+    table: Option<BriaTableSinkConfig>,
+    #[serde(default)]
+    table_name: Option<String>,
+    #[serde(default)]
+    store: Option<String>,
+    #[serde(default)]
+    db_table: Option<BriaDbTableConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct BriaDbTableConfig {
+    #[serde(default)]
+    columns: Option<TableSinkColumnsConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct BriaTableSinkConfig {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    columns: Option<TableSinkColumnsConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct BriaPipelineConfig {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    sources: Option<Vec<PipelineSourceEntry>>,
+    #[serde(default)]
+    merge: Option<MergeConfig>,
+    #[serde(default)]
+    concurrency: Option<usize>,
+    #[serde(default)]
+    queue_capacity: Option<usize>,
+    #[serde(default)]
+    sinks: Option<Vec<String>>,
+    #[serde(default)]
+    failure: Option<FailureConfig>,
+    #[serde(default)]
+    labels: Option<HashMap<String, String>>,
+    #[serde(default)]
+    steps: Vec<StepConfig>,
+}
+
+// =============================================================================
+// Resolution helpers
+// =============================================================================
+
+fn sqlite_url_to_path(url: &str) -> String {
+    if let Some(rest) = url.strip_prefix("sqlite://") {
+        rest.to_string()
+    } else if let Some(rest) = url.strip_prefix("sqlite:") {
+        rest.to_string()
+    } else {
+        url.to_string()
+    }
+}
+
+fn resolve_source(
+    bria: &BriaSourceConfig,
+    paths: &HashMap<String, SharedPathConfig>,
+    transports: &Option<SharedTransportsSection>,
+    stores: &HashMap<String, SharedStoreConfig>,
+) -> Result<SourceConfig> {
+    let mut s = SourceConfig::default_with_id(&bria.id);
+
+    let src_type: SourceType = match bria.r#type.as_str() {
+        "file" => SourceType::File,
+        "http" => SourceType::Http,
+        "webhook" => SourceType::Webhook,
+        "queue" => SourceType::Queue,
+        "cron" => SourceType::Cron,
+        "pg" => SourceType::Pg,
+        "sqlite" => SourceType::Sqlite,
+        "" => {
+            return Err(Error::config(format!(
+                "Source '{}' missing required 'type' field",
+                bria.id
+            )));
+        }
+        other => {
+            return Err(Error::config(format!(
+                "Source '{}' unknown type '{}'",
+                bria.id, other
+            )));
+        }
+    };
+    s.r#type = src_type.clone();
+    if let Some(ref direct_url) = bria.url {
+        if !direct_url.is_empty() {
+            s.url = direct_url.clone();
+        }
+    }
+
+    // Path resolution: local path > path_ref > default
+    if !bria.path.is_empty() {
+        s.path = PathBuf::from(&bria.path);
+    } else if let Some(ref path_ref) = bria.path_ref {
+        if !path_ref.is_empty() {
+            if let Some(path_cfg) = paths.get(path_ref) {
+                s.path = PathBuf::from(&path_cfg.path);
+            } else {
+                return Err(Error::config(format!(
+                    "Source '{}' path_ref '{}' not found in [paths]",
+                    bria.id, path_ref
+                )));
+            }
+        }
+    }
+
+    // AMQP transport resolution for queue sources
+    if src_type == SourceType::Queue {
+        if let Some(ref transport_id) = bria.transport {
+            if let Some(ts) = transports {
+                if let Some(amqp_cfg) = ts.amqp.get(transport_id) {
+                    s.url = bria.url.clone().unwrap_or_else(|| amqp_cfg.url.clone());
+                    s.username = bria
+                        .username
+                        .clone()
+                        .unwrap_or_else(|| amqp_cfg.username.clone());
+                    s.password = bria
+                        .password
+                        .clone()
+                        .unwrap_or_else(|| amqp_cfg.password.clone());
+                    s.reconnect_secs = bria.reconnect_secs.unwrap_or(amqp_cfg.reconnect_secs);
+                    s.qos_prefetch = bria.qos_prefetch.unwrap_or(amqp_cfg.qos_prefetch);
+                } else {
+                    return Err(Error::config(format!(
+                        "Source '{}' transport '{}' not found in [transports.amqp]",
+                        bria.id, transport_id
+                    )));
+                }
+            } else {
+                return Err(Error::config(format!(
+                    "Source '{}' references transport '{}' but no [transports] section exists",
+                    bria.id, transport_id
+                )));
+            }
+        }
+    }
+
+    // Store resolution for pg/sqlite sources
+    if src_type == SourceType::Pg || src_type == SourceType::Sqlite {
+        if let Some(ref store_id) = bria.store {
+            if let Some(store_cfg) = stores.get(store_id) {
+                if src_type == SourceType::Pg {
+                    s.url = bria.url.clone().unwrap_or_else(|| store_cfg.url.clone());
+                } else {
+                    // SQLite: resolve store URL to path if no direct path
+                    if s.path.as_os_str().is_empty() {
+                        let p = sqlite_url_to_path(&store_cfg.url);
+                        if !p.is_empty() {
+                            s.path = PathBuf::from(p);
+                        }
+                    }
+                }
+            } else {
+                return Err(Error::config(format!(
+                    "Source '{}' store '{}' not found in [stores]",
+                    bria.id, store_id
+                )));
+            }
+        }
+    }
+
+    // General overrides
+    s.poll_interval_secs = bria.poll_interval_secs.unwrap_or(2);
+    s.track_cursor = bria.track_cursor.unwrap_or(true);
+    s.authoritative = bria.authoritative.unwrap_or(false);
+    s.id_field = bria.id_field.clone().unwrap_or_default();
+    s.max_body_bytes = bria.max_body_bytes.unwrap_or(1_048_576);
+    s.exchange = bria.exchange.clone().unwrap_or_default();
+    s.submit_routing_key = bria
+        .submit_routing_key
+        .clone()
+        .unwrap_or_else(|| "job.submit".to_string());
+    s.cancel_routing_key = bria
+        .cancel_routing_key
+        .clone()
+        .unwrap_or_else(|| "job.cancel".to_string());
+    s.consumer_tag = bria
+        .consumer_tag
+        .clone()
+        .unwrap_or_else(|| "bria-source".to_string());
+    s.hmac_secret = bria.hmac_secret.clone().unwrap_or_default();
+    s.hmac_header = bria
+        .hmac_header
+        .clone()
+        .unwrap_or_else(|| "X-Bria-Signature".to_string());
+    s.ack_status = bria.ack_status.unwrap_or(202);
+    s.schedule = bria.schedule.clone().unwrap_or_default();
+    s.tz = bria.tz.clone().unwrap_or_else(|| "UTC".to_string());
+    s.labels = bria.labels.clone().unwrap_or_default();
+    s.payload = bria.payload.clone().unwrap_or_default();
+
+    if let Some(ref table) = bria.table {
+        let mut t = TableSourceConfig::default();
+        t.name = table.name.clone().unwrap_or_default();
+        if let Some(ref cols) = table.columns {
+            t.columns.id = cols.id.clone().unwrap_or_else(|| "id".to_string());
+            t.columns.payload = cols
+                .payload
+                .clone()
+                .unwrap_or_else(|| "payload".to_string());
+            t.columns.created_at = cols
+                .created_at
+                .clone()
+                .unwrap_or_else(|| "created_at".to_string());
+            t.columns.status = cols.status.clone().unwrap_or_else(|| "status".to_string());
+            t.columns.status_claimed_value = cols
+                .status_claimed_value
+                .clone()
+                .unwrap_or_else(|| "processing".to_string());
+            t.columns.status_done_value = cols
+                .status_done_value
+                .clone()
+                .unwrap_or_else(|| "done".to_string());
+            t.columns.status_failed_value = cols
+                .status_failed_value
+                .clone()
+                .unwrap_or_else(|| "failed".to_string());
+        }
+        s.table = Some(t);
+    }
+
+    Ok(s)
+}
+
+fn resolve_task(bria: &BriaTaskConfig) -> Result<TaskConfig> {
+    let mut t = TaskConfig::default_with_id(&bria.id);
+    t.driver = bria.driver.clone().unwrap_or_else(|| "local".to_string());
+    t.cmd = bria.cmd.clone();
+    t.args = bria.args.clone().unwrap_or_default();
+    t.inherit_env = bria.inherit_env.unwrap_or(false);
+    t.working_dir = bria.working_dir.clone().map(PathBuf::from);
+    t.success_exit_codes = bria.success_exit_codes.clone().unwrap_or_else(|| vec![0]);
+    t.timeout_secs = bria.timeout_secs.unwrap_or(300);
+    t.timeout_action = bria
+        .timeout_action
+        .clone()
+        .unwrap_or_else(|| "kill".to_string());
+    t.kill_grace_secs = bria.kill_grace_secs.unwrap_or(5);
+    t.env = bria.env.clone().unwrap_or_default();
+    t.stdin = bria.stdin.clone().unwrap_or_default();
+    t.stdout = bria
+        .stdout
+        .clone()
+        .unwrap_or_else(StreamConfig::default_capture);
+    t.stderr = bria
+        .stderr
+        .clone()
+        .unwrap_or_else(StreamConfig::default_stderr);
+    t.labels = bria.labels.clone().unwrap_or_default();
+    t.docker = bria.docker.clone();
+    t.wasm = bria.wasm.clone();
+
+    if let Some(ref retry) = bria.retry {
+        t.retry.max_attempts = retry.max_attempts.unwrap_or(0);
+        t.retry.base_delay_ms = retry.base_delay_ms.unwrap_or(1000);
+        t.retry.max_delay_ms = retry.max_delay_ms.unwrap_or(30000);
+        t.retry.jitter = retry.jitter.unwrap_or(0.2);
+    }
+
+    Ok(t)
+}
+
+fn resolve_sink(
+    bria: &BriaSinkConfig,
+    paths: &HashMap<String, SharedPathConfig>,
+    transports: &Option<SharedTransportsSection>,
+    stores: &HashMap<String, SharedStoreConfig>,
+) -> Result<SinkConfig> {
+    let mut s = SinkConfig::default_with_id(&bria.id);
+
+    let sink_type: SinkType = match bria.r#type.as_str() {
+        "file" => SinkType::File,
+        "webhook" => SinkType::Webhook,
+        "queue" => SinkType::Queue,
+        "pg" => SinkType::Pg,
+        "sqlite" => SinkType::Sqlite,
+        "stream" => SinkType::Stream,
+        "" => {
+            return Err(Error::config(format!(
+                "Sink '{}' missing required 'type' field",
+                bria.id
+            )));
+        }
+        other => {
+            return Err(Error::config(format!(
+                "Sink '{}' unknown type '{}'",
+                bria.id, other
+            )));
+        }
+    };
+    s.r#type = sink_type.clone();
+    if let Some(ref direct_url) = bria.url {
+        if !direct_url.is_empty() {
+            s.url = direct_url.clone();
+        }
+    }
+
+    // Path resolution
+    if let Some(ref direct_path) = bria.path {
+        if !direct_path.is_empty() {
+            s.path = direct_path.clone();
+        }
+    }
+    if s.path.is_empty() {
+        if let Some(ref path_ref) = bria.path_ref {
+            if !path_ref.is_empty() {
+                if let Some(path_cfg) = paths.get(path_ref) {
+                    s.path = path_cfg.path.clone();
+                } else {
+                    return Err(Error::config(format!(
+                        "Sink '{}' path_ref '{}' not found in [paths]",
+                        bria.id, path_ref
+                    )));
+                }
+            }
+        }
+    }
+
+    // Transport resolution for webhook sinks
+    if sink_type == SinkType::Webhook {
+        if let Some(ref transport_id) = bria.transport {
+            if let Some(ts) = transports {
+                if let Some(wh_cfg) = ts.webhook.get(transport_id) {
+                    s.url = bria.url.clone().unwrap_or_else(|| wh_cfg.url.clone());
+                    s.secret = bria.secret.clone().unwrap_or_else(|| wh_cfg.token.clone());
+                    s.signature_header = bria
+                        .signature_header
+                        .clone()
+                        .unwrap_or_else(|| wh_cfg.auth_header.clone());
+                    s.max_retries = bria.max_retries.unwrap_or(wh_cfg.max_retries);
+                    s.retry_base_ms = bria.retry_base_ms.unwrap_or(wh_cfg.retry_base_ms);
+                    s.timeout_secs = bria.timeout_secs.unwrap_or(wh_cfg.timeout_secs);
+                    if let Some(ref hdrs) = wh_cfg.headers {
+                        s.headers = hdrs.clone();
+                    }
+                } else {
+                    return Err(Error::config(format!(
+                        "Sink '{}' transport '{}' not found in [transports.webhook]",
+                        bria.id, transport_id
+                    )));
+                }
+            } else {
+                return Err(Error::config(format!(
+                    "Sink '{}' references transport '{}' but no [transports] section exists",
+                    bria.id, transport_id
+                )));
+            }
+        }
+    }
+
+    // Transport resolution for queue sinks
+    if sink_type == SinkType::Queue {
+        if let Some(ref transport_id) = bria.transport {
+            if let Some(ts) = transports {
+                if let Some(amqp_cfg) = ts.amqp.get(transport_id) {
+                    s.url = bria.url.clone().unwrap_or_else(|| amqp_cfg.url.clone());
+                    s.username = bria
+                        .username
+                        .clone()
+                        .unwrap_or_else(|| amqp_cfg.username.clone());
+                    s.password = bria
+                        .password
+                        .clone()
+                        .unwrap_or_else(|| amqp_cfg.password.clone());
+                    s.reconnect_secs = bria.reconnect_secs.unwrap_or(amqp_cfg.reconnect_secs);
+                }
+            }
+        }
+    }
+
+    // Store resolution for pg/sqlite sinks
+    if sink_type == SinkType::Pg || sink_type == SinkType::Sqlite {
+        if let Some(ref store_id) = bria.store {
+            if let Some(store_cfg) = stores.get(store_id) {
+                if sink_type == SinkType::Pg {
+                    s.url = bria.url.clone().unwrap_or_else(|| store_cfg.url.clone());
+                } else {
+                    if s.path.is_empty() {
+                        let p = sqlite_url_to_path(&store_cfg.url);
+                        if !p.is_empty() {
+                            s.path = p;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    s.template = bria.template.clone();
+    s.signature_header = if bria.signature_header.is_some() {
+        bria.signature_header.clone().unwrap_or_default()
+    } else {
+        s.signature_header
+    };
+    s.content_type = bria
+        .content_type
+        .clone()
+        .unwrap_or_else(|| "application/json".to_string());
+    s.exchange = bria.exchange.clone().unwrap_or_default();
+    s.success_routing_key = bria.success_routing_key.clone().unwrap_or_default();
+    s.failure_routing_key = bria.failure_routing_key.clone().unwrap_or_default();
+    s.sse = bria.sse.clone().unwrap_or_else(|| "sse".to_string());
+    s.websocket = bria.websocket.clone().unwrap_or_else(|| "ws".to_string());
+    s.ws_heartbeat_secs = bria.ws_heartbeat_secs.unwrap_or(30);
+    s.sse_keepalive_secs = bria.sse_keepalive_secs.unwrap_or(5);
+    s.broadcast_capacity = bria.broadcast_capacity.unwrap_or(1024);
+
+    // Table config
+    let mut table_columns = TableSinkColumnsConfig::default();
+    if let Some(ref db_table) = bria.db_table {
+        if let Some(ref cols) = db_table.columns {
+            table_columns = cols.clone();
+        }
+    }
+    if let Some(ref tbl) = bria.table {
+        let mut tcs = TableSinkConfig {
+            name: tbl.name.clone().unwrap_or_default(),
+            columns: table_columns,
+        };
+        if let Some(ref cols) = tbl.columns {
+            tcs.columns = cols.clone();
+        }
+        s.table = Some(tcs);
+    } else if bria.table_name.is_some() {
+        // Inline table_name with db_table.columns
+        s.table = Some(TableSinkConfig {
+            name: bria.table_name.clone().unwrap_or_default(),
+            columns: table_columns,
+        });
+    }
+
+    Ok(s)
+}
+
+fn resolve_pipeline(bria: &BriaPipelineConfig) -> Result<PipelineConfig> {
+    let p = PipelineConfig {
+        id: bria.id.clone(),
+        source: bria.source.clone(),
+        sources: bria.sources.clone().unwrap_or_default(),
+        merge: bria.merge.clone(),
+        concurrency: bria.concurrency.unwrap_or(8),
+        queue_capacity: bria.queue_capacity.unwrap_or(256),
+        sinks: bria.sinks.clone().unwrap_or_default(),
+        failure: bria.failure.clone().unwrap_or_default(),
+        labels: bria.labels.clone().unwrap_or_default(),
+        steps: bria.steps.clone(),
+        resolved_sources: OnceLock::new(),
+    };
+    Ok(p)
+}
+
+// =============================================================================
+// Public configuration structs (existing shape, preserved)
+// =============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalConfig {
@@ -378,7 +1707,7 @@ fn default_tmp_dir() -> PathBuf {
     std::env::temp_dir()
 }
 fn default_max_payload_bytes() -> usize {
-    10 * 1024 * 1024 // 10 MiB
+    10 * 1024 * 1024
 }
 fn default_cancel_signal_ttl_secs() -> u64 {
     3600
@@ -388,8 +1717,6 @@ fn default_cancel_signal_ttl_secs() -> u64 {
 pub struct LogConfig {
     #[serde(default = "default_log_level")]
     pub level: String,
-    /// When None (omitted), auto-detect: text if stdout is a TTY, json otherwise.
-    /// Explicit "text" or "json" values are always preserved.
     #[serde(default)]
     pub format: Option<String>,
     #[serde(default)]
@@ -407,8 +1734,6 @@ impl Default for LogConfig {
 }
 
 impl LogConfig {
-    /// Resolve the effective log format: returns the configured value, or
-    /// auto-detects "text" for TTY stdout and "json" for non-TTY.
     pub fn effective_format(&self) -> &str {
         if let Some(ref fmt) = self.format {
             fmt.as_str()
@@ -514,9 +1839,9 @@ fn default_kill_grace_secs() -> u64 {
     5
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// =============================================================================
 // Server configuration
-// ─────────────────────────────────────────────────────────────────────────────
+// =============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
@@ -570,16 +1895,15 @@ fn default_server_shutdown_timeout() -> u64 {
     5
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// =============================================================================
 // Source configuration
-// ─────────────────────────────────────────────────────────────────────────────
+// =============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceConfig {
     pub id: String,
     #[serde(rename = "type")]
     pub r#type: SourceType,
-    // File source
     #[serde(default)]
     pub path: PathBuf,
     #[serde(default = "default_poll_interval")]
@@ -590,17 +1914,14 @@ pub struct SourceConfig {
     pub authoritative: bool,
     #[serde(default)]
     pub id_field: String,
-    // HTTP source
     #[serde(default = "default_max_body_bytes_val")]
     pub max_body_bytes: usize,
-    // Webhook source
     #[serde(default)]
     pub hmac_secret: String,
     #[serde(default = "default_hmac_header")]
     pub hmac_header: String,
     #[serde(default = "default_ack_status")]
     pub ack_status: u16,
-    // Queue source
     #[serde(default)]
     pub url: String,
     #[serde(default)]
@@ -619,23 +1940,49 @@ pub struct SourceConfig {
     pub qos_prefetch: u16,
     #[serde(default = "default_consumer_tag")]
     pub consumer_tag: String,
-    // Cron source
     #[serde(default)]
     pub schedule: String,
     #[serde(default = "default_tz")]
     pub tz: String,
-    // Labels
     #[serde(default)]
     pub labels: HashMap<String, String>,
-    // Payload (for cron)
     #[serde(default)]
     pub payload: serde_json::Value,
-    // Table (for pg/sqlite)
     #[serde(default)]
     pub table: Option<TableSourceConfig>,
 }
 
 impl SourceConfig {
+    pub(crate) fn default_with_id(id: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            r#type: SourceType::File,
+            path: PathBuf::new(),
+            poll_interval_secs: default_poll_interval(),
+            track_cursor: true,
+            authoritative: false,
+            id_field: String::new(),
+            max_body_bytes: default_max_body_bytes_val(),
+            hmac_secret: String::new(),
+            hmac_header: default_hmac_header(),
+            ack_status: default_ack_status(),
+            url: String::new(),
+            username: String::new(),
+            password: String::new(),
+            exchange: String::new(),
+            submit_routing_key: default_submit_routing_key(),
+            cancel_routing_key: default_cancel_routing_key(),
+            reconnect_secs: default_reconnect_secs(),
+            qos_prefetch: default_qos_prefetch(),
+            consumer_tag: default_consumer_tag(),
+            schedule: String::new(),
+            tz: default_tz(),
+            labels: HashMap::new(),
+            payload: serde_json::Value::Null,
+            table: None,
+        }
+    }
+
     pub fn kind(&self) -> SourceKind<'_> {
         match self.r#type {
             SourceType::File => SourceKind::File(self),
@@ -690,10 +2037,6 @@ impl SourceConfig {
     }
 }
 
-/// Typed view over the flat TOML-compatible source configuration.
-///
-/// Bria keeps the public TOML shape backward compatible while routing runtime
-/// logic through this enum to make source-specific branches explicit.
 pub enum SourceKind<'a> {
     File(&'a SourceConfig),
     Http(&'a SourceConfig),
@@ -710,6 +2053,15 @@ pub struct TableSourceConfig {
     pub name: String,
     #[serde(default)]
     pub columns: TableSourceColumnsConfig,
+}
+
+impl Default for TableSourceConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            columns: TableSourceColumnsConfig::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -767,7 +2119,7 @@ fn default_status_failed_value() -> String {
 }
 
 pub(crate) fn default_max_body_bytes_val() -> usize {
-    1_048_576 // 1 MiB
+    1_048_576
 }
 fn default_poll_interval() -> u64 {
     2
@@ -826,9 +2178,9 @@ impl SourceType {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// =============================================================================
 // Task configuration
-// ─────────────────────────────────────────────────────────────────────────────
+// =============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskConfig {
@@ -868,14 +2220,30 @@ pub struct TaskConfig {
     pub wasm: Option<WasmConfig>,
 }
 
-fn default_stderr_stream() -> StreamConfig {
-    StreamConfig {
-        mode: default_capture_mode(),
-        max_bytes: 1024 * 1024,
-    }
-}
-
 impl TaskConfig {
+    pub(crate) fn default_with_id(id: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            driver: default_driver(),
+            cmd: String::new(),
+            args: Vec::new(),
+            inherit_env: false,
+            working_dir: None,
+            success_exit_codes: default_success_exit_codes(),
+            timeout_secs: 0,
+            timeout_action: default_timeout_action(),
+            kill_grace_secs: default_kill_grace_secs(),
+            env: HashMap::new(),
+            stdin: StdinConfig::default(),
+            stdout: StreamConfig::default_capture(),
+            stderr: StreamConfig::default_stderr(),
+            retry: TaskRetryConfig::default(),
+            labels: HashMap::new(),
+            docker: None,
+            wasm: None,
+        }
+    }
+
     pub fn kind(&self) -> TaskDriverKind<'_> {
         match self.driver.as_str() {
             "docker" => TaskDriverKind::Docker(self),
@@ -920,7 +2288,6 @@ impl TaskConfig {
     }
 }
 
-/// Typed view over task driver-specific settings.
 pub enum TaskDriverKind<'a> {
     Local(&'a TaskConfig),
     Docker(&'a TaskConfig),
@@ -963,17 +2330,34 @@ pub struct StreamConfig {
     pub max_bytes: usize,
 }
 
-impl Default for StreamConfig {
-    fn default() -> Self {
+impl StreamConfig {
+    pub(crate) fn default_capture() -> Self {
         Self {
             mode: default_capture_mode(),
             max_bytes: 10 * 1024 * 1024,
         }
     }
+
+    pub(crate) fn default_stderr() -> Self {
+        Self {
+            mode: default_capture_mode(),
+            max_bytes: 1024 * 1024,
+        }
+    }
+}
+
+impl Default for StreamConfig {
+    fn default() -> Self {
+        Self::default_capture()
+    }
 }
 
 fn default_capture_mode() -> String {
     "capture".to_string()
+}
+
+fn default_stderr_stream() -> StreamConfig {
+    StreamConfig::default_stderr()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1027,21 +2411,19 @@ fn default_max_memory_pages() -> u32 {
     256
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// =============================================================================
 // Sink configuration
-// ─────────────────────────────────────────────────────────────────────────────
+// =============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SinkConfig {
     pub id: String,
     #[serde(rename = "type")]
     pub r#type: SinkType,
-    // File sink
     #[serde(default)]
     pub path: String,
     #[serde(default)]
     pub template: Option<String>,
-    // Webhook sink
     #[serde(default)]
     pub secret: String,
     #[serde(default = "default_signature_header")]
@@ -1056,7 +2438,6 @@ pub struct SinkConfig {
     pub timeout_secs: u64,
     #[serde(default)]
     pub headers: HashMap<String, String>,
-    // Queue sink
     #[serde(default)]
     pub url: String,
     #[serde(default)]
@@ -1071,7 +2452,6 @@ pub struct SinkConfig {
     pub failure_routing_key: String,
     #[serde(default = "default_reconnect_secs")]
     pub reconnect_secs: u64,
-    // Stream sink
     #[serde(default = "default_sse")]
     pub sse: String,
     #[serde(default = "default_ws")]
@@ -1082,12 +2462,40 @@ pub struct SinkConfig {
     pub sse_keepalive_secs: u64,
     #[serde(default = "default_broadcast_capacity")]
     pub broadcast_capacity: usize,
-    // Table (for pg/sqlite sinks)
     #[serde(default)]
     pub table: Option<TableSinkConfig>,
 }
 
 impl SinkConfig {
+    pub(crate) fn default_with_id(id: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            r#type: SinkType::File,
+            path: String::new(),
+            template: None,
+            secret: String::new(),
+            signature_header: default_signature_header(),
+            content_type: default_content_type(),
+            max_retries: default_max_retries(),
+            retry_base_ms: default_retry_base_ms_sink(),
+            timeout_secs: default_timeout_secs_sink(),
+            headers: HashMap::new(),
+            url: String::new(),
+            username: String::new(),
+            password: String::new(),
+            exchange: String::new(),
+            success_routing_key: String::new(),
+            failure_routing_key: String::new(),
+            reconnect_secs: default_reconnect_secs(),
+            sse: default_sse(),
+            websocket: default_ws(),
+            ws_heartbeat_secs: default_ws_heartbeat(),
+            sse_keepalive_secs: default_sse_keepalive(),
+            broadcast_capacity: default_broadcast_capacity(),
+            table: None,
+        }
+    }
+
     pub fn kind(&self) -> SinkKind<'_> {
         match self.r#type {
             SinkType::File => SinkKind::File(self),
@@ -1141,15 +2549,12 @@ impl SinkConfig {
                     )));
                 }
             }
-            SinkType::Stream => {
-                // Stream sink is valid without additional requirements
-            }
+            SinkType::Stream => {}
         }
         Ok(())
     }
 }
 
-/// Typed view over sink-specific settings.
 pub enum SinkKind<'a> {
     File(&'a SinkConfig),
     Webhook(&'a SinkConfig),
@@ -1287,17 +2692,15 @@ fn default_col_status() -> String {
     "status".to_string()
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// =============================================================================
 // Pipeline configuration
-// ─────────────────────────────────────────────────────────────────────────────
+// =============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineConfig {
     pub id: String,
-    /// Single source shorthand (scalar).
     #[serde(default)]
     pub source: Option<String>,
-    /// Multiple sources (array of tables).
     #[serde(default)]
     pub sources: Vec<PipelineSourceEntry>,
     #[serde(default)]
@@ -1315,15 +2718,11 @@ pub struct PipelineConfig {
     #[serde(default)]
     pub steps: Vec<StepConfig>,
 
-    /// Runtime cache: merged list of source ids for this pipeline.
-    /// Lazily populated by `get_sources()` and eagerly refreshable by
-    /// `resolve_sources()` for backward compatibility with existing callers.
     #[serde(skip)]
     pub resolved_sources: OnceLock<Vec<String>>,
 }
 
 impl PipelineConfig {
-    /// Resolve sources after parsing: if `source` is set, use it; otherwise use `sources`.
     pub fn resolve_sources(&mut self) {
         self.resolved_sources = OnceLock::new();
         let _ = self.resolved_sources.set(self.compute_sources());
@@ -1345,7 +2744,6 @@ impl PipelineConfig {
     ) -> Result<()> {
         let mut errors: Vec<String> = Vec::new();
 
-        // Validate sources exist
         if let Some(ref source) = self.source {
             if !source_ids.contains(source.as_str()) {
                 errors.push(format!(
@@ -1364,12 +2762,10 @@ impl PipelineConfig {
             }
         }
 
-        // Validate has at least one source
         if self.source.is_none() && self.sources.is_empty() {
             errors.push(format!("Pipeline '{}' has no sources configured", self.id));
         }
 
-        // Validate merge config for multi-source
         if self.sources.len() > 1 && self.merge.is_none() {
             errors.push(format!(
                 "Pipeline '{}' has multiple sources but no [pipelines.merge] section",
@@ -1377,7 +2773,6 @@ impl PipelineConfig {
             ));
         }
 
-        // Validate merge config
         if let Some(ref merge) = self.merge {
             match merge.strategy.as_str() {
                 "any" | "all" => {}
@@ -1387,7 +2782,6 @@ impl PipelineConfig {
                 )),
             }
 
-            // correlation_key and correlation_expr are mutually exclusive
             if merge.correlation_key.is_some() && merge.correlation_expr.is_some() {
                 errors.push(format!(
                     "Pipeline '{}' merge config: correlation_key and correlation_expr are mutually exclusive",
@@ -1395,7 +2789,6 @@ impl PipelineConfig {
                 ));
             }
 
-            // Must have one of correlation_key or correlation_expr
             if merge.correlation_key.is_none() && merge.correlation_expr.is_none() {
                 errors.push(format!(
                     "Pipeline '{}' merge config: must specify either correlation_key or correlation_expr",
@@ -1404,10 +2797,8 @@ impl PipelineConfig {
             }
         }
 
-        // Validate each step
         let step_ids: HashSet<&str> = self.steps.iter().map(|s| s.id.as_str()).collect();
 
-        // Check duplicate step IDs
         {
             let mut seen = HashSet::new();
             for step in &self.steps {
@@ -1444,7 +2835,6 @@ impl PipelineConfig {
                             self.id, step.id
                         ));
                     }
-                    // Validate skip_to references a real step
                     if let Some(ref skip_to) = step.skip_to
                         && !step_ids.contains(skip_to.as_str())
                     {
@@ -1453,7 +2843,6 @@ impl PipelineConfig {
                             self.id, step.id, skip_to
                         ));
                     }
-                    // Validate action
                     match step.action.as_deref().unwrap_or("fail") {
                         "fail" | "skip_to" | "emit" => {}
                         a => errors.push(format!(
@@ -1463,7 +2852,6 @@ impl PipelineConfig {
                     }
                 }
                 StepType::Map => {
-                    // Map steps must have set entries
                     if step.set.is_empty() {
                         errors.push(format!(
                             "Pipeline '{}' step '{}' type 'map' requires at least one [[pipelines.steps.set]] entry",
@@ -1473,7 +2861,6 @@ impl PipelineConfig {
                 }
             }
 
-            // Validate depends_on references
             for dep in &step.depends_on {
                 if !step_ids.contains(dep.as_str()) {
                     errors.push(format!(
@@ -1483,7 +2870,6 @@ impl PipelineConfig {
                 }
             }
 
-            // Validate retry jitter
             if step.retry.jitter < 0.0 || step.retry.jitter > 1.0 {
                 errors.push(format!(
                     "Pipeline '{}' step '{}' retry.jitter must be between 0.0 and 1.0, got {}",
@@ -1491,7 +2877,6 @@ impl PipelineConfig {
                 ));
             }
 
-            // Validate failure config
             if step.failure.action == FailureAction::DeadLetter && step.failure.sink.is_none() {
                 errors.push(format!(
                     "Pipeline '{}' step '{}' failure action is dead_letter but no sink specified",
@@ -1499,7 +2884,6 @@ impl PipelineConfig {
                 ));
             }
 
-            // Validate routing sink references
             for route in &step.routing {
                 for sink_id in &route.sinks {
                     if !sink_ids.contains(sink_id.as_str()) {
@@ -1512,7 +2896,6 @@ impl PipelineConfig {
             }
         }
 
-        // Build and validate the DAG (detect cycles)
         if let Err(e) = self.validate_dag(&step_ids) {
             errors.push(e);
         }
@@ -1524,11 +2907,7 @@ impl PipelineConfig {
         Ok(())
     }
 
-    /// Validate the DAG: no cycles, and compute execution order.
-    /// For steps with no depends_on, they implicitly depend on the preceding step
-    /// (or are entry points if they are the first step).
     fn validate_dag(&self, step_ids: &HashSet<&str>) -> std::result::Result<(), String> {
-        // Build explicit dependency graph
         let mut deps: HashMap<&str, Vec<&str>> = HashMap::new();
 
         for (_i, step) in self.steps.iter().enumerate() {
@@ -1544,7 +2923,6 @@ impl PipelineConfig {
             deps.insert(step.id.as_str(), step_deps);
         }
 
-        // Topological sort with cycle detection (Kahn's algorithm)
         let mut in_degree: HashMap<&str, usize> = step_ids.iter().map(|&id| (id, 0)).collect();
         let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
 
@@ -1588,11 +2966,6 @@ impl PipelineConfig {
     }
 }
 
-/// Get the resolved sources for this pipeline.
-///
-/// Returns the cached result from `resolve_sources()` if available; otherwise
-/// computes it on the fly from the TOML fields (`source` or `sources`). This
-/// means callers do not need to remember to call `resolve_sources()` first.
 impl PipelineConfig {
     pub fn get_sources(&self) -> &[String] {
         self.resolved_sources.get_or_init(|| self.compute_sources())
@@ -1681,7 +3054,6 @@ pub struct StepConfig {
     pub sinks: Vec<String>,
     #[serde(default)]
     pub routing: Vec<StepRoutingConfig>,
-    // Condition step fields
     #[serde(default)]
     pub expr: Option<String>,
     #[serde(default)]
@@ -1690,7 +3062,6 @@ pub struct StepConfig {
     pub skip_to: Option<String>,
     #[serde(default)]
     pub reason: Option<String>,
-    // Map step fields
     #[serde(default)]
     pub set: Vec<MapSetEntry>,
 }
@@ -1792,19 +3163,38 @@ pub struct MapSetEntry {
     pub expr: String,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// =============================================================================
 // Environment variable substitution
-// ─────────────────────────────────────────────────────────────────────────────
+// =============================================================================
 
-/// Substitute `${VAR_NAME}` patterns with OS environment values.
-/// Unset variables cause an error.
+/// Substitute `${VAR_NAME}` and `${VAR_NAME:-default}` patterns with OS env
+/// values. Unset variables without defaults cause an error.
 pub fn substitute_env(input: &str) -> Result<String> {
+    // Two patterns:
+    // 1. ${VAR_NAME:-default}  — use default if var unset
+    // 2. ${VAR_NAME}           — error if var unset
     static ENV_VAR_RE: OnceLock<regex::Regex> = OnceLock::new();
+    static ENV_VAR_DEFAULT_RE: OnceLock<regex::Regex> = OnceLock::new();
+
+    let re_default = ENV_VAR_DEFAULT_RE
+        .get_or_init(|| regex::Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*):-([^}]*)\}").unwrap());
     let re =
         ENV_VAR_RE.get_or_init(|| regex::Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}").unwrap());
+
     let mut errors: Vec<String> = Vec::new();
 
-    let result = re.replace_all(input, |caps: &regex::Captures| {
+    // First pass: handle ${VAR:-default}
+    let with_defaults = re_default.replace_all(input, |caps: &regex::Captures| {
+        let var_name = caps.get(1).unwrap().as_str();
+        let default = caps.get(2).unwrap().as_str();
+        match std::env::var(var_name) {
+            Ok(val) => val,
+            Err(_) => default.to_string(),
+        }
+    });
+
+    // Second pass: handle plain ${VAR}
+    let result = re.replace_all(&with_defaults, |caps: &regex::Captures| {
         let var_name = caps.get(1).unwrap().as_str();
         match std::env::var(var_name) {
             Ok(val) => val,

@@ -9,3 +9,6 @@ mod pipeline_task_runner;
 
 #[path = "integration/sources_state_util.rs"]
 mod sources_state_util;
+
+#[path = "integration/universal_config.rs"]
+mod universal_config;

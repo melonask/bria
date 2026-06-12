@@ -1,916 +1,245 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Bria — Multi-pipeline job orchestrator
+# Universal namespaced configuration (schema version 1)
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# Environment variable substitution: ${VAR_NAME} is resolved at config load
-# time. Unset variables cause a load error — never silently replaced with "".
+# Standalone usage:
+#   bria --config Config.toml
+#   BRIA_CONFIG=Config.toml bria
 #
-# Command-line:  bria --config Config.toml
-# Environment:   BRIA_CONFIG=Config.toml bria
-# Validate and check configuration; Bria won't start if there are errors.
+# For standalone Bria, a config may include only shared sections that Bria
+# references plus the [bria] namespace. It is also valid to use this file as
+# part of a merged universal config with shared profiles defined elsewhere.
 #
-# ─── Conceptual model ────────────────────────────────────────────────────────
+# Environment variables:
+#   ${VAR_NAME}         — required; load fails if unset
+#   ${VAR_NAME:-default} — optional; uses default if unset
 #
-#   [[sources]]   — named inlets that produce Jobs
-#   [[tasks]]     — named, reusable command templates
-#   [[sinks]]     — named outlets that consume Results
-#   [[pipelines]] — DAGs of steps wiring the above together
+# Shared profile references (resolved at load time, not preserved at runtime):
+#   store   = "<id>"  resolves [stores.<id>]
+#   path_ref = "<id>"  resolves [paths.<id>]
+#   transport = "<id>"  resolves [transports.<transport_kind>.<id>]
 #
-#   A Job flows through a pipeline's steps.
-#   Each step receives a Context and emits an updated Context:
-#
-#     Context = {
-#       job:   { id, source, payload }
-#       steps: { <step_id>: { stdout, stderr, exit_code, duration_ms,
-#                             attempt, outputs: { <name>: <value> } } }
-#     }
-#
-# ─── Expressions (CEL) ───────────────────────────────────────────────────────
-#
-#   condition steps, map steps, routing rules, and merge correlation_expr
-#   all use Google Common Expression Language (CEL) evaluated by cel-rust.
-#   CEL is sandboxed — no I/O, no side effects, deterministic.
-#
-#   The full Context object is available as the CEL input. Examples:
-#     job.payload.width <= 4096
-#     steps.resize.exit_code == 0 && job.payload.priority == "high"
-#     "s3://" + job.payload.bucket + "/" + job.payload.key
-#     job.payload.order_id == job.payload.request_id   ← merge correlation
-#
-# ─── Placeholder syntax ──────────────────────────────────────────────────────
-#
-#   Used in: cmd, args, env values, stdin templates, file paths, URLs,
-#            body templates, routing keys.  Rendered by minijinja.
-#
-#   {{job.id}}                      ULID  e.g. 01ARZ3NDEKTSV4RRFFQ69G5FAV
-#   {{job.source}}                  source id that produced the job
-#   {{job.payload.<field>}}         field from the ingress payload
-#   {{steps.<id>.stdout}}           raw stdout of a prior step
-#   {{steps.<id>.stderr}}           raw stderr of a prior step
-#   {{steps.<id>.exit_code}}        integer exit code of a prior step
-#   {{steps.<id>.outputs.<name>}}   named output extracted from a prior step
-#   {{env.<VAR>}}                   OS environment variable at runtime
-#   {{now}}                         ISO-8601 UTC timestamp at step start
-#   {{now_unix}}                    Unix epoch seconds at step start
-#
-#   Missing placeholders cause the job to fail — no silent empty substitution.
-#
-# ─────────────────────────────────────────────────────────────────────────────
+# See README.md for the full parameter reference.
 
+version = 1
 
-# ══════════════════════════════════════════════════════════════════════════════
-# GLOBAL
-# ══════════════════════════════════════════════════════════════════════════════
-[global]
-# Number of Tokio worker threads. 0 = logical CPU count. Default: 0
+# ─── Shared root: logging (optional, inherited by [bria.global.log]) ─────────
+[log]
+level = "info"
+format = "json"
+file = ""
+
+# ─── Shared root: runtime (optional, inherited by [bria.global]) ─────────────
+[runtime]
 worker_threads = 0
-
-# Graceful shutdown timeout across all pipelines (seconds). Default: 30
 shutdown_timeout_secs = 30
-
-# Directory for temporary files (e.g. stdin payloads written to disk).
-# Default: OS temp dir. Uncomment to override explicitly.
-# tmp_dir = "/tmp/bria"
-
-# Maximum size of a single job payload in bytes. Default: 10485760 (10 MiB)
+tmp_dir = "data/tmp"
 max_payload_bytes = 10485760
 
-# How long cancellation signals are retained for jobs that have not arrived yet
-# (seconds). Prevents unbounded memory growth from stale cancellation requests.
-# Default: 3600
+# ─── Shared root: HTTP defaults (optional, inherited by [bria.server]) ───────
+[http]
+bind = "0.0.0.0"
+prefix = "v1"
+
+# ─── Shared root: stores. Bria's state backend resolves from [stores.bria]. ──
+#     SQLite is the default.  Postgres requires --features pg or --features postgres.
+[stores.bria]
+driver = "sqlite"
+url = "sqlite://data/bria/bria-state.db"
+migrate = true
+connect_timeout_secs = 10
+max_connections = 1
+
+# ─── Shared root: path profiles for file sources/sinks ───────────────────────
+[paths.bria_jobs]
+kind = "file"
+path = "data/bria/jobs/images.jsonl"
+format = "jsonl"
+create_parent_dirs = true
+
+[paths.bria_results]
+kind = "file"
+path = "data/bria/results.jsonl"
+format = "jsonl"
+create_parent_dirs = true
+
+# ─── Shared root: AMQP transport profile ────────────────────────────────────
+[transports.amqp.local]
+url = "amqp://localhost:5672"
+reconnect_secs = 5
+qos_prefetch = 100
+
+# ─── Shared root: webhook transport profile ──────────────────────────────────
+[transports.webhook.ops]
+url = "${OPS_WEBHOOK_URL:-}"
+method = "POST"
+auth_scheme = "bearer"
+token = "${OPS_WEBHOOK_TOKEN:-}"
+timeout_secs = 10
+max_retries = 3
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BRI A NAMESPACE
+# ══════════════════════════════════════════════════════════════════════════════
+
+[bria]
+enabled = true
+
+# ─── Global defaults ──────────────────────────────────────────────────────────
+[bria.global]
+worker_threads = 0
+shutdown_timeout_secs = 30
+tmp_dir = "data/bria/tmp"
+max_payload_bytes = 10485760
 cancel_signal_ttl_secs = 3600
 
-# ─── Logging ──────────────────────────────────────────────────────────────────
-[global.log]
-# "trace" | "debug" | "info" | "warn" | "error". Default: "info"
-level = "info"
-
-# "text" — human-readable (default when stdout is a TTY)
-# "json" — structured JSON (default when stdout is not a TTY)
-format = "json"
-
-# When non-empty, write logs to this file in addition to stdout. Default: ""
-file = "/var/log/bria/bria.log"
-
-# ─── State backend ────────────────────────────────────────────────────────────
-# Persists in-flight job state and retry schedules so Bria can resume cleanly
-# after a restart without re-processing completed jobs or losing in-flight ones.
-#
-# This is distinct from sinks (which record results for observability) and from
-# per-source cursors (which track ingestion position).
-#
-# Supported backends:
-#   memory  — no persistence; all in-flight state is lost on restart (default)
-#   sqlite  — single-node durability; good for development and single-host prod
-#   pg      — multi-node / HA; required for horizontally scaled deployments
-[global.state]
-# Default: "memory"
+[bria.global.state]
 backend = "sqlite"
+store = "bria"        # resolves [stores.bria]
+sqlite_path = "data/bria/bria-state.db"
 
-# SQLite: path to the state database file.
-# Default: "bria-state.db"
-sqlite_path = "bria-state.db"
-
-# PostgreSQL: connection URL (only used when backend = "pg").
-# Default: ""
-pg_url = "postgres://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/bria_state"
-
-# ─── Global retry defaults ────────────────────────────────────────────────────
-# Inherited by all tasks unless overridden at the task or step level.
-# Precedence: [pipelines.steps.retry] > [tasks.retry] > [global.retry]
-[global.retry]
-max_attempts  = 0
+[bria.global.retry]
+max_attempts = 0
 base_delay_ms = 1000
-max_delay_ms  = 30000
-jitter        = 0.2
+max_delay_ms = 30000
+jitter = 0.2
 
-# ─── Global timeout defaults ──────────────────────────────────────────────────
-# Precedence: [pipelines.steps.with] > [tasks] > [global.timeout]
-[global.timeout]
-# Wall-clock seconds per step. 0 = unlimited. Default: 300
+[bria.global.timeout]
 step_secs = 300
-# "kill" — SIGKILL immediately. "term" — SIGTERM then SIGKILL. Default: "kill"
 action = "term"
-# Seconds between SIGTERM and SIGKILL when action = "term". Default: 5
 kill_grace_secs = 5
 
+# ─── HTTP server (requires --features server) ─────────────────────────────────
+[bria.server]
+enabled = false
+bind = "0.0.0.0"
+port = 4000
+prefix = "v1"
+api_key = ""
+dashboard_path_ref = ""   # optional, resolves [paths.<id>]
+shutdown_timeout_secs = 5
+max_body_bytes = 52428800
 
-# ══════════════════════════════════════════════════════════════════════════════
-# SERVER  (optional HTTP control plane)
-# ══════════════════════════════════════════════════════════════════════════════
-[server]
-enabled = false        # Default: false
-bind    = "0.0.0.0"   # Default: "0.0.0.0"
-port    = 4000         # Default: 4000
-prefix  = "v1"         # URL prefix for all routes. Default: "v1"
-
-# When non-empty all routes require:
-#   Authorization: Bearer <key>   OR   X-Bria-Api-Key: <key>
-api_key = ""  # Default: ""
-
-# Static dashboard served at /{prefix}/dashboard. Default: ""
-dashboard = ""
-
-# In-flight request drain timeout during graceful shutdown (seconds).
-shutdown_timeout_secs = 5  # Default: 5
-
-# Server-wide maximum request body size in bytes. Applied as a global
-# cap via `axum::DefaultBodyLimit`. Per-source limits take precedence
-# and are enforced inside the handler.
-max_body_bytes = 52428800  # Default: 52428800 (50 MiB)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# SOURCES
-# ══════════════════════════════════════════════════════════════════════════════
-# Each [[sources]] block defines a named inlet that produces Jobs.
-# Pipelines reference sources by id.
-#
-# Supported types:
-#   file      — watch a file or directory for new/modified entries
-#   http      — receive jobs via HTTP POST  (requires server.enabled)
-#   webhook   — passive HTTP listener with optional HMAC verification
-#   queue     — consume from an AMQP topic exchange
-#   cron      — emit a synthetic job on a cron schedule
-#   pg        — poll a PostgreSQL table for pending rows
-#   sqlite    — poll a SQLite table for pending rows
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ─── file ─────────────────────────────────────────────────────────────────────
-[[sources]]
-id   = "image-file"
+# ─── Sources ──────────────────────────────────────────────────────────────────
+[[bria.sources]]
+id = "image-file"
 type = "file"
-
-# .json  → array of job objects, reloaded on change
-# .jsonl → one job object per line, tailed for new lines
-# .csv   → each row becomes a job; header row defines field names
-# Directory: all supported files inside are processed; new files are picked up.
-path = "jobs/images.jsonl"
-
-# How often to stat the path for changes (seconds). Minimum 1. Default: 2
+path_ref = "bria_jobs"   # resolves [paths.bria_jobs]
 poll_interval_secs = 2
-
-# When true, a sidecar .bria-cursor file tracks the last-read position so
-# already-seen lines are skipped on restart. Default: true
 track_cursor = true
-
-# When true, a full reload withdraws jobs no longer present. Default: false
-authoritative = false
-
-# Payload field used as job.id.
-# When absent, Bria generates a ULID. Default: ""
 id_field = "job_id"
+max_body_bytes = 1048576
 
-[sources.labels]
+[bria.sources.labels]
 team = "ml-platform"
-env  = "production"
+env = "local"
 
-# ─── http ─────────────────────────────────────────────────────────────────────
-[[sources]]
-id   = "image-http"
+[[bria.sources]]
+id = "image-http"
 type = "http"
-
-# POST   /{prefix}/{path}       → submit a job
-# DELETE /{prefix}/{path}/{id}  → cancel a job
 path = "jobs/images"
-
-# Maximum request body size in bytes. Default: 1048576
+poll_interval_secs = 2
 max_body_bytes = 1048576
 
-# ─── webhook ──────────────────────────────────────────────────────────────────
-[[sources]]
-id   = "stripe-events"
-type = "webhook"
-
-path           = "webhooks/stripe"
-hmac_secret    = "${STRIPE_WEBHOOK_SECRET}"  # Default: "" (no verification)
-hmac_header    = "Stripe-Signature"          # Default: "X-Bria-Signature"
-ack_status     = 202                         # Default: 202
-max_body_bytes = 1048576
-
-# ─── queue ────────────────────────────────────────────────────────────────────
-[[sources]]
-id   = "amqp-image-jobs"
+[[bria.sources]]
+id = "queue-jobs"
 type = "queue"
-
-url                = "amqp://${AMQP_HOST}:${AMQP_PORT}"
-username           = "bria"
-password           = "${AMQP_PASSWORD}"
-exchange           = "bria.sources"
+enabled = false            # disabled example; requires --features amqp
+transport = "local"        # resolves [transports.amqp.local]
+exchange = "bria.jobs"
 submit_routing_key = "job.submit"
 cancel_routing_key = "job.cancel"
-reconnect_secs     = 5
-qos_prefetch       = 100
-consumer_tag       = "bria-source"
+consumer_tag = "bria"
 
-# ─── cron ─────────────────────────────────────────────────────────────────────
-[[sources]]
-id   = "hourly-tick"
-type = "cron"
-
-schedule = "0 * * * *"  # Standard 5-field cron expression. Required.
-tz       = "UTC"         # IANA timezone name. Default: "UTC"
-
-[sources.payload]
-report_type = "hourly"
-bucket      = "${S3_BUCKET}"
-
-# ─── pg ───────────────────────────────────────────────────────────────────────
-[[sources]]
-id   = "pg-image-jobs"
-type = "pg"
-
-url                = "postgres://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/bria"
-poll_interval_secs = 5
-
-[sources.table]
-name = "pending_jobs"
-
-[sources.table.columns]
-id                   = "id"
-payload              = "payload"
-created_at           = "created_at"
-status               = "status"
-status_claimed_value = "processing"
-status_done_value    = "done"
-status_failed_value  = "failed"
-
-# ─── sqlite ───────────────────────────────────────────────────────────────────
-[[sources]]
-id   = "sqlite-image-jobs"
-type = "sqlite"
-
-path               = "jobs.db"
-poll_interval_secs = 5
-
-[sources.table]
-name = "pending_jobs"
-
-[sources.table.columns]
-id                   = "id"
-payload              = "payload"
-created_at           = "created_at"
-status               = "status"
-status_claimed_value = "processing"
-status_done_value    = "done"
-status_failed_value  = "failed"
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TASKS
-# ══════════════════════════════════════════════════════════════════════════════
-# A task is a reusable command template. Steps instantiate tasks by id and
-# may override individual fields via [pipelines.steps.with].
-#
-# Execution drivers:
-#   local   — spawn a subprocess on the host (default)
-#   docker  — run inside a container; cmd becomes the container entrypoint
-#   wasm    — execute a WebAssembly module; cmd is the path to the .wasm file
-#
-# Override precedence (highest to lowest):
-#   [pipelines.steps.with]  →  [[tasks]]  →  [global]
-#
-# [with.env]  merges key-by-key into [tasks.env].
-# [with.args] replaces the entire args list.
-# ─────────────────────────────────────────────────────────────────────────────
-
-[[tasks]]
-id     = "add-red-balloon"
-driver = "local"   # Default: "local"
-
-cmd  = "npx"
-args = [
-  "-y",
-  "add-red-balloon",
-  "{{job.payload.s3_url}}",
-  "{{job.payload.prompt}}",
-]
-
-# Inherit the parent process's full environment before applying [tasks.env].
-# Default: false
+# ─── Tasks ────────────────────────────────────────────────────────────────────
+[[bria.tasks]]
+id = "add-red-balloon"
+driver = "local"
+cmd = "npx"
+args = ["-y", "add-red-balloon", "{{job.payload.s3_url}}", "{{job.payload.prompt}}"]
 inherit_env = false
-
-# Working directory for the child process. Default: Bria's cwd.
-# working_dir = "/tmp/bria/work"
-
-# Exit codes treated as success. Default: [0]
 success_exit_codes = [0]
-
-timeout_secs    = 300
-timeout_action  = "term"
+timeout_secs = 300
+timeout_action = "term"
 kill_grace_secs = 5
 
-[tasks.env]
-AWS_ACCESS_KEY_ID     = "${AWS_ACCESS_KEY_ID}"
-AWS_SECRET_ACCESS_KEY = "${AWS_SECRET_ACCESS_KEY}"
-AWS_REGION            = "${AWS_REGION}"
-NODE_ENV              = "production"
+[bria.tasks.env]
+NODE_ENV = "production"
 
-[tasks.stdin]
-# "none"     — close stdin immediately (default)
-# "payload"  — raw job payload JSON
-# "template" — render [tasks.stdin.template] and send the result
-mode     = "none"
-# template = '{"url":"{{job.payload.s3_url}}","instruction":"{{job.payload.prompt}}"}'
+[bria.tasks.stdin]
+mode = "none"
 
-[tasks.stdout]
-# "capture" — buffer in memory, available to later steps (default)
-# "stream"  — emit lines to step sinks in real time
-# "discard" — drop
-mode      = "capture"
-max_bytes = 10485760  # Hard cap; exceeding this fails the job. Default: 10 MiB
+[bria.tasks.stdout]
+mode = "capture"
+max_bytes = 10485760
 
-[tasks.stderr]
-mode      = "capture"
-max_bytes = 1048576   # Default: 1 MiB
+[bria.tasks.stderr]
+mode = "capture"
+max_bytes = 1048576
 
-[tasks.retry]
-max_attempts  = 3
+[bria.tasks.retry]
+max_attempts = 3
 base_delay_ms = 1000
-max_delay_ms  = 30000
-jitter        = 0.2
+max_delay_ms = 30000
+jitter = 0.2
 
-[tasks.labels]
-team    = "ml-platform"
-runtime = "node"
-
-# ─────────────────────────────────────────────────────────────────────────────
-[[tasks]]
-id     = "resize-image"
-driver = "local"
-
-cmd  = "python3"
-args = [
-  "scripts/resize.py",
-  "--input",  "{{steps.balloon.outputs.output_path}}",
-  "--width",  "{{job.payload.width}}",
-  "--output", "/tmp/bria/{{job.id}}_resized.jpg",
-]
-
-inherit_env  = false
-timeout_secs = 60
-
-[tasks.env]
-PYTHONPATH = "scripts"
-
-[tasks.stdin]
-mode = "none"
-
-[tasks.stdout]
-mode      = "capture"
-max_bytes = 10485760
-
-[tasks.stderr]
-mode      = "capture"
-max_bytes = 1048576
-
-[tasks.retry]
-max_attempts  = 2
-base_delay_ms = 500
-
-# ─────────────────────────────────────────────────────────────────────────────
-[[tasks]]
-id     = "upload-to-s3"
-driver = "local"
-
-cmd  = "aws"
-args = [
-  "s3", "cp",
-  "{{steps.resize.outputs.local_path}}",
-  "s3://{{job.payload.bucket}}/results/{{job.id}}.jpg",
-]
-
-inherit_env  = false
-timeout_secs = 120
-
-[tasks.env]
-AWS_ACCESS_KEY_ID     = "${AWS_ACCESS_KEY_ID}"
-AWS_SECRET_ACCESS_KEY = "${AWS_SECRET_ACCESS_KEY}"
-AWS_REGION            = "${AWS_REGION}"
-
-[tasks.stdin]
-mode = "none"
-
-[tasks.stdout]
-mode      = "capture"
-max_bytes = 10485760
-
-[tasks.stderr]
-mode      = "capture"
-max_bytes = 1048576
-
-[tasks.retry]
-max_attempts  = 5
-base_delay_ms = 2000
-max_delay_ms  = 60000
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Docker driver example: run a task inside a container.
-# cmd becomes the container image; args become the command passed to it.
-[[tasks]]
-id     = "ocr-extract"
-driver = "docker"
-
-cmd  = "ghcr.io/example/ocr-service:latest"  # container image
-args = ["--input", "{{job.payload.s3_url}}", "--lang", "{{job.payload.lang}}"]
-
-[tasks.docker]
-# Additional docker run flags. Default: []
-flags = ["--rm", "--network=host"]
-# Mount pairs: "host_path:container_path". Supports {{}} placeholders.
-# Default: []
-mounts = ["/tmp/bria:/tmp/bria"]
-# Pull policy: "always" | "missing" | "never". Default: "missing"
-pull = "missing"
-
-[tasks.stdin]
-mode = "none"
-
-[tasks.stdout]
-mode      = "capture"
-max_bytes = 10485760
-
-[tasks.stderr]
-mode      = "capture"
-max_bytes = 1048576
-
-[tasks.retry]
-max_attempts  = 2
-base_delay_ms = 1000
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Wasm driver example: execute a sandboxed WebAssembly module.
-# cmd is the path to the .wasm file. args and stdin are passed via WASI.
-[[tasks]]
-id     = "validate-payload"
-driver = "wasm"
-
-cmd  = "modules/validate.wasm"
-args = ["--schema", "{{job.payload.schema_id}}"]
-
-[tasks.wasm]
-# WASI preopened directory mappings: "host_path:guest_path".
-# The module can only access explicitly listed paths. Default: []
-dirs = ["/tmp/bria:/tmp"]
-# Maximum memory pages (1 page = 64 KiB). Default: 256  (16 MiB)
-max_memory_pages = 256
-# Wall-clock fuel limit (instructions). 0 = unlimited. Default: 0
-fuel = 100000000
-
-[tasks.stdin]
-mode = "payload"  # pass job payload JSON to the module via stdin
-
-[tasks.stdout]
-mode      = "capture"
-max_bytes = 1048576
-
-[tasks.stderr]
-mode      = "capture"
-max_bytes = 65536
-
-[tasks.retry]
-max_attempts = 1
-
-# ─────────────────────────────────────────────────────────────────────────────
-[[tasks]]
-id     = "remote-transcribe"
-driver = "local"
-
-cmd  = "ssh"
-args = [
-  "-i", "${SSH_KEY_PATH}",
-  "-o", "StrictHostKeyChecking=no",
-  "{{job.payload.remote_user}}@{{job.payload.remote_host}}",
-  "python3 /opt/transcribe/run.py --file {{job.payload.remote_path}}",
-]
-
-inherit_env  = false
-timeout_secs = 600
-
-[tasks.env]
-SSH_AUTH_SOCK = "${SSH_AUTH_SOCK}"
-
-[tasks.stdin]
-mode = "none"
-
-[tasks.stdout]
-mode      = "capture"
-max_bytes = 10485760
-
-[tasks.stderr]
-mode      = "capture"
-max_bytes = 1048576
-
-[tasks.retry]
-max_attempts = 1
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# SINKS
-# ══════════════════════════════════════════════════════════════════════════════
-# Each [[sinks]] block defines a named outlet that receives Results.
-# Pipelines and individual steps reference sinks by id.
-#
-# Template variables available in path, url, body_template, routing keys:
-#   {{job.id}}                      ULID of the original job
-#   {{job.source}}                  source id
-#   {{job.payload.<field>}}         any field from the original payload
-#   {{steps.<id>.stdout}}           captured stdout of a named step
-#   {{steps.<id>.stderr}}           captured stderr of a named step
-#   {{steps.<id>.exit_code}}        exit code of a named step
-#   {{steps.<id>.outputs.<name>}}   extracted output of a named step
-#   {{pipeline.id}}                 pipeline id
-#   {{result.status}}               "success" | "failure"
-#   {{result.duration_ms}}          total wall-clock time across all steps
-#   {{occurred_at}}                 ISO-8601 UTC timestamp of completion
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ─── file ─────────────────────────────────────────────────────────────────────
-[[sinks]]
-id   = "results-file"
+# ─── Sinks ────────────────────────────────────────────────────────────────────
+[[bria.sinks]]
+id = "results-file"
 type = "file"
+path_ref = "bria_results"   # resolves [paths.bria_results]
+template = ""
 
-path = "results/output.jsonl"
-# template = '{"id":"{{job.id}}","out":"{{steps.resize.stdout}}"}'
-
-# ─── webhook ──────────────────────────────────────────────────────────────────
-[[sinks]]
-id   = "results-webhook"
+[[bria.sinks]]
+id = "results-webhook"
 type = "webhook"
+enabled = false              # requires --features webhook
+transport = "ops"            # resolves [transports.webhook.ops]
+template = ""
 
-url              = "https://hooks.example.com/bria/results"
-secret           = "${WEBHOOK_SECRET}"
-signature_header = "X-Bria-Signature"
-content_type     = "application/json"
-max_retries      = 3
-retry_base_ms    = 250
-timeout_secs     = 30
-
-[sinks.headers]
-X-Source   = "bria"
-X-Pipeline = "{{pipeline.id}}"
-
-# ─── queue ────────────────────────────────────────────────────────────────────
-[[sinks]]
-id   = "results-queue"
-type = "queue"
-
-url                 = "amqp://${AMQP_HOST}:${AMQP_PORT}"
-username            = "bria"
-password            = "${AMQP_PASSWORD}"
-exchange            = "bria.results"
-success_routing_key = "result.{{pipeline.id}}.success"
-failure_routing_key = "result.{{pipeline.id}}.failure"
-reconnect_secs      = 5
-
-# ─── pg ───────────────────────────────────────────────────────────────────────
-[[sinks]]
-id   = "results-pg"
-type = "pg"
-
-url = "postgres://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/bria"
-
-[sinks.table]
-name = "job_results"
-
-[sinks.table.columns]
-result_id   = "result_id"
-job_id      = "job_id"
-pipeline_id = "pipeline_id"
-step_id     = "step_id"
-occurred_at = "occurred_at"
-exit_code   = "exit_code"
-stdout      = "stdout"
-stderr      = "stderr"
-duration_ms = "duration_ms"
-attempt     = "attempt"
-status      = "status"
-
-# ─── sqlite ───────────────────────────────────────────────────────────────────
-[[sinks]]
-id   = "results-sqlite"
+[[bria.sinks]]
+id = "results-sqlite"
 type = "sqlite"
+store = "bria"               # resolves [stores.bria]
+table_name = "pipeline_results"
+path = "data/bria/results.db"
+template = ""
 
-path = "results.db"
-
-[sinks.table]
-name = "job_results"
-
-[sinks.table.columns]
-result_id   = "result_id"
-job_id      = "job_id"
+[bria.sinks.db_table.columns]
+result_id = "result_id"
+job_id = "job_id"
 pipeline_id = "pipeline_id"
-step_id     = "step_id"
+step_id = "step_id"
 occurred_at = "occurred_at"
-exit_code   = "exit_code"
-stdout      = "stdout"
-stderr      = "stderr"
+exit_code = "exit_code"
+stdout = "stdout"
+stderr = "stderr"
 duration_ms = "duration_ms"
-attempt     = "attempt"
-status      = "status"
+attempt = "attempt"
+status = "status"
 
-# ─── stream  (SSE + WebSocket push) ───────────────────────────────────────────
-[[sinks]]
-id   = "results-stream"
-type = "stream"
-
-sse                = "sse"    # /{prefix}/sse
-websocket          = "ws"     # /{prefix}/ws
-ws_heartbeat_secs  = 30
-sse_keepalive_secs = 5
-broadcast_capacity = 1024
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PIPELINES
-# ══════════════════════════════════════════════════════════════════════════════
-#
-# ─── Step types ───────────────────────────────────────────────────────────────
-#   process    — run a [[tasks]] command template
-#   map        — reshape the context with CEL expressions (no subprocess)
-#   condition  — branch: fail, jump to a labelled step, or emit early
-#
-# ─── DAG execution ────────────────────────────────────────────────────────────
-#   Steps declare dependencies via depends_on = ["step_id", ...].
-#   Steps whose dependencies are all satisfied run concurrently.
-#   Steps with no depends_on implicitly depend on the immediately preceding
-#   step, preserving simple top-to-bottom readability for linear pipelines.
-#   Bria validates the graph at startup and rejects cycles.
-#
-# ─── Source shorthand ─────────────────────────────────────────────────────────
-#   Single source  →  source = "my-source"       (scalar string)
-#   Multiple sources → [[pipelines.sources]]      (array of tables)
-#   [pipelines.merge] is only present with multiple sources.
-#
-# ─── Sink selection precedence ────────────────────────────────────────────────
-#   step routing rule  >  step sinks  >  pipeline sinks
-#
-# ─── Failure handling ─────────────────────────────────────────────────────────
-#   [failure]
-#   action = "discard"     — drop silently (default)
-#            "dead_letter" — route context to sink
-#            "stop"        — halt pipeline until operator intervention
-#   sink   = "<sink id>"   — required when action = "dead_letter"
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ── Example 1: parallel-capable image pipeline ────────────────────────────────
-# Steps "resize" and "validate" both depend only on "balloon", so they run
-# concurrently. "upload" waits for both to finish.
-[[pipelines]]
-id = "image-processing"
-
-[[pipelines.sources]]
+# ─── Pipelines ────────────────────────────────────────────────────────────────
+[[bria.pipelines]]
+id = "image-pipeline"
 source = "image-file"
+concurrency = 4
+queue_capacity = 1024
+sinks = ["results-file"]
 
-[[pipelines.sources]]
-source = "image-http"
-
-[pipelines.merge]
-strategy        = "any"
-correlation_key = "correlation_id"
-timeout_secs    = 60
-
-concurrency    = 8
-queue_capacity = 256
-sinks          = ["results-webhook", "results-pg"]
-
-[pipelines.failure]
+[bria.pipelines.failure]
 action = "dead_letter"
-sink   = "results-sqlite"
+sink = "results-file"
 
-[pipelines.labels]
-team = "ml-platform"
-env  = "production"
-
-# ── Step: balloon ─────────────────────────────────────────────────────────────
-[[pipelines.steps]]
-id   = "balloon"
+[[bria.pipelines.steps]]
+id = "balloon"
 type = "process"
 task = "add-red-balloon"
-# No depends_on → depends on the preceding step (none here = entry point).
-
-[pipelines.steps.with]
-timeout_secs = 180
-[pipelines.steps.with.env]
-NODE_ENV = "staging"
-
-[pipelines.steps.outputs]
-format = "json"
-
-[[pipelines.steps.outputs.fields]]
-key  = "output_path"
-name = "output_path"   # → {{steps.balloon.outputs.output_path}}
-
-[[pipelines.steps.outputs.fields]]
-key  = "width"
-name = "detected_width"
-
-[pipelines.steps.retry]
-max_attempts  = 2
-base_delay_ms = 2000
-
-[pipelines.steps.failure]
-action = "dead_letter"
-sink   = "results-sqlite"
-
+depends_on = []
 sinks = []
 
-# ── Step: validate (runs concurrently with resize) ────────────────────────────
-[[pipelines.steps]]
-id          = "validate"
-type        = "process"
-task        = "validate-payload"
-depends_on  = ["balloon"]   # runs as soon as balloon finishes
-
-[pipelines.steps.outputs]
-format = "json"
-
-[[pipelines.steps.outputs.fields]]
-key  = "valid"
-name = "valid"
-
-# ── Step: resize (runs concurrently with validate) ────────────────────────────
-[[pipelines.steps]]
-id         = "resize"
-type       = "process"
-task       = "resize-image"
-depends_on = ["balloon"]   # also starts immediately after balloon
-
-[pipelines.steps.outputs]
-format = "json"
-
-[[pipelines.steps.outputs.fields]]
-key  = "local_path"
-name = "local_path"
-
-# ── Step: upload (waits for both validate and resize) ─────────────────────────
-[[pipelines.steps]]
-id         = "upload"
-type       = "process"
-task       = "upload-to-s3"
-depends_on = ["validate", "resize"]   # fan-in: starts only when both are done
-
-[[pipelines.steps.routing]]
-# CEL expression evaluated against the full context.
-condition = 'steps.upload.exit_code == 0 && job.payload.priority == "high"'
-sinks     = ["results-webhook", "results-pg", "results-stream"]
-
-[[pipelines.steps.routing]]
-condition = "steps.upload.exit_code != 0"
-sinks     = ["results-sqlite"]
-
-# ── Example 2: map step ───────────────────────────────────────────────────────
-# Reshapes context using CEL expressions — no subprocess spawned.
-# Each [[pipelines.steps.set]] entry writes one field into the context.
-
-# [[pipelines.steps]]
-# id   = "normalise"
-# type = "map"
-#
-# [[pipelines.steps.set]]
-# target = "job.payload.s3_url"
-# expr   = '"s3://" + job.payload.bucket + "/" + job.payload.key'
-#
-# [[pipelines.steps.set]]
-# target = "job.payload.prompt"
-# expr   = '"add red balloon, do not change face"'
-
-# ── Example 3: condition step ─────────────────────────────────────────────────
-# Short-circuit the pipeline using a CEL expression.
-
-# [[pipelines.steps]]
-# id   = "guard-size"
-# type = "condition"
-# expr = "job.payload.width <= 4096"
-#
-# # What to do when expr is false:
-# # "fail"    — fail the job with reason (default)
-# # "skip_to" — jump forward to the step with id = skip_to
-# # "emit"    — send current context to sinks and stop
-# action  = "fail"
-# skip_to = ""                   # step id; used when action = "skip_to"
-# sinks   = ["results-sqlite"]   # used when action = "emit"
-# reason  = "Image too wide; skipped processing."
-
-# ── Example 4: single-source pipeline (scalar shorthand) ──────────────────────
-[[pipelines]]
-id = "hourly-report"
-
-source      = "hourly-tick"
-concurrency = 1
-sinks       = ["results-file"]
-
-[pipelines.failure]
-action = "discard"
-
-[[pipelines.steps]]
-id   = "generate-report"
-type = "process"
-task = "resize-image"
-
-[pipelines.steps.outputs]
-format = "text"
-
-[[pipelines.steps.outputs.fields]]
-key  = ""
-name = "report"   # → {{steps.generate-report.outputs.report}}
-
-# ── Example 5: multi-source correlation with CEL merge expression ──────────────
-# [pipelines.merge] supports an optional correlation_expr (CEL) as an
-# alternative to correlation_key when matching requires logic beyond equality.
-# Example: match jobs where either order_id OR request_id align across sources.
-[[pipelines]]
-id = "order-fulfilment"
-
-[[pipelines.sources]]
-source = "stripe-events"
-
-[[pipelines.sources]]
-source = "amqp-image-jobs"
-
-[pipelines.merge]
-strategy = "all"
-# Simple field equality (most common case):
-# correlation_key = "order_id"
-#
-# CEL expression for multi-field or cross-field correlation.
-# Both `a` and `b` refer to the job context from each source respectively.
-# correlation_expr is mutually exclusive with correlation_key.
-correlation_expr = 'a.job.payload.order_id == b.job.payload.order_id'
-timeout_secs     = 300
-
-concurrency    = 16
-queue_capacity = 512
-sinks          = ["results-queue"]
-
-[pipelines.failure]
-action = "dead_letter"
-sink   = "results-pg"
-
-[pipelines.labels]
-team = "payments"
-
-[[pipelines.steps]]
-id   = "transcribe"
-type = "process"
-task = "remote-transcribe"
-
-[pipelines.steps.outputs]
-format = "json"
-
-[[pipelines.steps.outputs.fields]]
-key  = "transcript"
-name = "transcript"
-
-[[pipelines.steps]]
-id         = "notify"
-type       = "process"
-task       = "add-red-balloon"
-depends_on = ["transcribe"]
-
-[pipelines.steps.with]
-args = [
-  "notify-service",
-  "--job",  "{{job.id}}",
-  "--text", "{{steps.transcribe.outputs.transcript}}",
-]
+[bria.pipelines.steps.retry]
+max_attempts = 3
+base_delay_ms = 1000
+max_delay_ms = 30000
+jitter = 0.2

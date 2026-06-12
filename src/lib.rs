@@ -1,3 +1,12 @@
+#![allow(
+    clippy::collapsible_if,
+    clippy::collapsible_match,
+    clippy::derivable_impls,
+    clippy::field_reassign_with_default,
+    clippy::map_flatten,
+    clippy::needless_borrow
+)]
+
 pub mod cli;
 pub mod config;
 pub mod context;
