@@ -67,7 +67,7 @@ worker_threads = 2
 shutdown_timeout_secs = 60
 
 [bria.global.state]
-backend = "sqlite"
+backend = "file"
 store = "bria"
 
 [[bria.sources]]
@@ -106,7 +106,7 @@ task = "test-task"
     // Verify shared sections were read
     assert_eq!(config.global.worker_threads, 2);
     assert_eq!(config.global.shutdown_timeout_secs, 60);
-    assert_eq!(config.global.state.backend, "sqlite");
+    assert_eq!(config.global.state.backend, "file");
 
     // Verify path_ref resolved
     assert_eq!(
