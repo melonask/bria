@@ -22,13 +22,13 @@ use crate::util::{quote_ident, validate_identifier};
 /// Create a Job from a payload value.
 pub fn create_job(source: &config::SourceConfig, value: &serde_json::Value) -> Job {
     let id = if source.id_field.is_empty() {
-        ulid::Ulid::new().to_string()
+        ulid::Ulid::r#gen().to_string()
     } else {
         value
             .get(&source.id_field)
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .unwrap_or_else(|| ulid::Ulid::new().to_string())
+            .unwrap_or_else(|| ulid::Ulid::r#gen().to_string())
     };
     Job {
         id,
@@ -439,7 +439,7 @@ pub async fn run_cron_source_inline(
                 .unwrap_or(std::time::Duration::from_secs(60));
             tokio::time::sleep(until_next).await;
             let job = Job {
-                id: ulid::Ulid::new().to_string(),
+                id: ulid::Ulid::r#gen().to_string(),
                 source: source.id.clone(),
                 payload: source.payload.clone(),
                 correlation_key: None,

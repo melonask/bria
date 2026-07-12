@@ -444,7 +444,7 @@ impl SinkDispatcher {
 
         let insert_sql_arc = std::sync::Arc::new(insert_sql);
         for (step_id, step_result) in &result.steps {
-            let result_id = ulid::Ulid::new().to_string();
+            let result_id = ulid::Ulid::r#gen().to_string();
             sqlx::query(sqlx::AssertSqlSafe(insert_sql_arc.clone()))
                 .bind(&result_id)
                 .bind(&result.job.id)
@@ -648,7 +648,7 @@ impl SinkDispatcher {
 
         let insert_sql_arc = std::sync::Arc::new(insert_sql);
         for (step_id, step_result) in &result.steps {
-            let result_id = ulid::Ulid::new().to_string();
+            let result_id = ulid::Ulid::r#gen().to_string();
             sqlx::query(sqlx::AssertSqlSafe(insert_sql_arc.clone()))
                 .bind(&result_id)
                 .bind(&result.job.id)

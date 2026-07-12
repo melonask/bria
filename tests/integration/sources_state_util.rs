@@ -227,7 +227,7 @@ fn unique_sqlite_path(label: &str) -> String {
         "bria-st-test-{}-{}-{}.db",
         std::process::id(),
         label,
-        ulid::Ulid::new()
+        ulid::Ulid::r#gen()
     ));
     let s = path.to_string_lossy().to_string();
     let _ = std::fs::remove_file(&path);
@@ -475,10 +475,11 @@ fn amqp_url_with_credentials_applies_configured_credentials() {
 fn cancel_signal_ttl_clamps_zero_and_prunes_expired_entries() {
     let config = bria::Config::from_str_with_env(
         r#"
-[global]
+[bria]
+[bria.global]
 cancel_signal_ttl_secs = 0
 
-[[sources]]
+[[bria.sources]]
 id = "manual"
 type = "file"
 path = "unused.jsonl"
@@ -512,7 +513,7 @@ async fn file_source_json_array_emits_multiple_jobs_and_sink_records_all() {
     let base = std::env::temp_dir().join(format!(
         "bria-src-json-{}-{}",
         std::process::id(),
-        ulid::Ulid::new()
+        ulid::Ulid::r#gen()
     ));
     let output = base.join("results.jsonl");
     let input = base.join("batch.json");
@@ -521,35 +522,36 @@ async fn file_source_json_array_emits_multiple_jobs_and_sink_records_all() {
 
     let config_str = format!(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "{}"
 poll_interval_secs = 1
 id_field = "id"
 
-[[tasks]]
+[[bria.tasks]]
 id = "echo-v"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf '%s' \"$1\"", "sh", "{{{{job.payload.v}}}}"]
 
-[tasks.stdout]
+[bria.tasks.stdout]
 mode = "capture"
 max_bytes = 16
 
-[[sinks]]
+[[bria.sinks]]
 id = "sink"
 type = "file"
 path = "{}"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 sinks = ["sink"]
 concurrency = 2
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "echo-v"
@@ -581,7 +583,7 @@ async fn file_source_csv_emits_header_based_jobs() {
     let base = std::env::temp_dir().join(format!(
         "bria-src-csv-{}-{}",
         std::process::id(),
-        ulid::Ulid::new()
+        ulid::Ulid::r#gen()
     ));
     let output = base.join("out.jsonl");
     let input = base.join("data.csv");
@@ -590,34 +592,35 @@ async fn file_source_csv_emits_header_based_jobs() {
 
     let config_str = format!(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "{}"
 poll_interval_secs = 1
 
-[[tasks]]
+[[bria.tasks]]
 id = "echo"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf '%s' \"$1\"", "sh", "{{{{job.payload.name}}}}-{{{{job.payload.score}}}}"]
 
-[tasks.stdout]
+[bria.tasks.stdout]
 mode = "capture"
 max_bytes = 128
 
-[[sinks]]
+[[bria.sinks]]
 id = "sink"
 type = "file"
 path = "{}"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 sinks = ["sink"]
 concurrency = 2
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "echo"
@@ -647,7 +650,7 @@ async fn file_source_ignores_unknown_file_extension() {
     let base = std::env::temp_dir().join(format!(
         "bria-src-txt-{}-{}",
         std::process::id(),
-        ulid::Ulid::new()
+        ulid::Ulid::r#gen()
     ));
     let output = base.join("out.txt.jsonl");
     let input_dir = base.join("jobs");
@@ -657,28 +660,29 @@ async fn file_source_ignores_unknown_file_extension() {
 
     let config_str = format!(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "{}"
 poll_interval_secs = 1
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
 
-[[sinks]]
+[[bria.sinks]]
 id = "sink"
 type = "file"
 path = "{}"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 sinks = ["sink"]
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "noop"
@@ -707,7 +711,7 @@ async fn file_source_authoritative_mode_cancels_removed_items() {
     let base = std::env::temp_dir().join(format!(
         "bria-src-auth-{}-{}",
         std::process::id(),
-        ulid::Ulid::new()
+        ulid::Ulid::r#gen()
     ));
     let output = base.join("out.jsonl");
     let input = base.join("jobs.jsonl");
@@ -722,7 +726,8 @@ async fn file_source_authoritative_mode_cancels_removed_items() {
 
     let config_str = format!(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "{}"
@@ -731,28 +736,28 @@ track_cursor = true
 authoritative = true
 id_field = "id"
 
-[[tasks]]
+[[bria.tasks]]
 id = "emit"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf '%s' \"$1\"", "sh", "{{{{job.payload.msg}}}}"]
 
-[tasks.stdout]
+[bria.tasks.stdout]
 mode = "capture"
 max_bytes = 128
 
-[[sinks]]
+[[bria.sinks]]
 id = "sink"
 type = "file"
 path = "{}"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 sinks = ["sink"]
 concurrency = 2
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "emit"

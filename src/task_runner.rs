@@ -968,6 +968,10 @@ fn wasm_error_string(e: wasmtime::Error) -> String {
 #[cfg(unix)]
 fn send_sigterm(child: &tokio::process::Child) {
     if let Some(pid) = child.id() {
+        // SAFETY: `Child::id` returns the operating-system process identifier
+        // for this child. Unix process identifiers fit `pid_t`, and SIGTERM is
+        // a valid signal constant. `kill` only requests delivery; failure (for
+        // example because the child already exited) is intentionally best-effort.
         unsafe {
             libc::kill(pid as i32, libc::SIGTERM);
         }

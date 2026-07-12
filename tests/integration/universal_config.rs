@@ -123,6 +123,48 @@ task = "test-task"
 }
 
 #[test]
+fn accepts_root_level_universal_config_with_artur_namespace() {
+    let raw = r#"
+version = 1
+
+[log]
+level = "info"
+
+[runtime]
+max_payload_bytes = 1048576
+
+[stores.bria]
+driver = "postgres"
+url = "postgres://bria:bria@localhost/bria"
+
+[artur.server]
+bind = "127.0.0.1"
+port = 46796
+body_limit_bytes = 1048576
+
+[[artur.endpoints]]
+name = "readiness"
+method = "GET"
+path = "/readyz"
+action = "respond.static"
+
+[artur.endpoints.response]
+status = 200
+body = { status = "ready" }
+
+[bria]
+enabled = true
+"#;
+
+    let config = Config::from_str_with_env(raw)
+        .expect("Artur must be tolerated as a peer universal namespace");
+    config
+        .validate()
+        .expect("Bria validation must remain strict only within Bria configuration");
+    assert_eq!(config.global.state.backend, "memory");
+}
+
+#[test]
 fn ignores_unrelated_namespaces() {
     let raw = r#"
 [ladon]
@@ -580,7 +622,7 @@ cmd = "true"
 
 #[test]
 fn load_from_path_with_universal_config_file() {
-    let tmp = std::env::temp_dir().join(format!("bria-uni-config-{}.toml", ulid::Ulid::new()));
+    let tmp = std::env::temp_dir().join(format!("bria-uni-config-{}.toml", ulid::Ulid::r#gen()));
     let content = r#"
 version = 1
 

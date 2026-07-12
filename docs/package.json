@@ -1,0 +1,11 @@
+{
+  "name": "bria-docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vitepress build"
+  },
+  "devDependencies": {
+    "vitepress": "2.0.0-alpha.18"
+  }
+}

@@ -195,7 +195,7 @@ impl Orchestrator {
         )
         .await?;
         let cancel_signals: Arc<DashMap<String, Instant>> = server_h.cancel_signals;
-        let pipeline_pauses: Arc<DashMap<String, Arc<tokio::sync::Notify>>> =
+        let pipeline_pauses: Arc<DashMap<String, Arc<pipeline::PipelinePause>>> =
             server_h.pipeline_pauses;
         let server_handle = server_h.join_handle;
 
@@ -500,7 +500,7 @@ impl Orchestrator {
         mut job_rx: mpsc::Receiver<Job>,
         store: Arc<dyn StateStore>,
         cancel_signals: Arc<DashMap<String, Instant>>,
-        pipeline_pauses: Arc<DashMap<String, Arc<tokio::sync::Notify>>>,
+        pipeline_pauses: Arc<DashMap<String, Arc<pipeline::PipelinePause>>>,
     ) {
         let concurrency = if pipeline.concurrency > 0 {
             pipeline.concurrency
@@ -917,7 +917,7 @@ fn merge_group_to_job(
     }
 
     Job {
-        id: ulid::Ulid::new().to_string(),
+        id: ulid::Ulid::r#gen().to_string(),
         source: format!("merge:{}", pipeline.id),
         payload: serde_json::Value::Object(payload),
         correlation_key: correlation_key.and_then(|key| {
@@ -954,7 +954,8 @@ pub async fn run_pipeline_once_with_config(
 
     let template = Arc::new(TemplateEngine::new());
     let evaluator = Arc::new(Evaluator::with_pipeline_id(pipeline.id.clone()));
-    let pipeline_pauses: Arc<DashMap<String, Arc<tokio::sync::Notify>>> = Arc::new(DashMap::new());
+    let pipeline_pauses: Arc<DashMap<String, Arc<pipeline::PipelinePause>>> =
+        Arc::new(DashMap::new());
 
     Ok(pipeline::run_pipeline(
         &pipeline,

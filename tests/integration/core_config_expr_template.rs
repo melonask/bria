@@ -65,21 +65,22 @@ fn substitute_env_handles_adjacent_tokens() {
 #[test]
 fn from_str_with_env_parses_valid_minimal_toml() {
     let raw = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "manual"
 type = "file"
 path = "unused.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "hello"
 source = "manual"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "echo"
 type = "process"
 task = "noop"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -96,6 +97,23 @@ fn from_str_with_env_returns_error_for_malformed_toml() {
 }
 
 #[test]
+fn from_str_with_env_rejects_unnested_legacy_config() {
+    let err = Config::from_str_with_env(
+        r#"
+[[sources]]
+id = "legacy"
+type = "file"
+path = "input.jsonl"
+"#,
+    )
+    .expect_err("an explicit [bria] namespace is required");
+    assert!(
+        err.to_string()
+            .contains("Missing required [bria] namespace")
+    );
+}
+
+#[test]
 fn load_from_path_errors_for_nonexistent_file() {
     let err = Config::load_from_path("/nonexistent/bria/test/config.toml")
         .expect_err("nonexistent file must fail");
@@ -104,23 +122,24 @@ fn load_from_path_errors_for_nonexistent_file() {
 
 #[test]
 fn load_from_path_delegates_to_from_str_with_env_for_valid_file() {
-    let tmp = std::env::temp_dir().join(format!("bria-valid-config-{}.toml", ulid::Ulid::new()));
+    let tmp = std::env::temp_dir().join(format!("bria-valid-config-{}.toml", ulid::Ulid::r#gen()));
     let toml_content = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "manual"
 type = "file"
 path = "unused.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 source = "manual"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "step"
 type = "process"
 task = "noop"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -143,12 +162,13 @@ fn parse(raw: &str) -> Config {
 fn validate_rejects_duplicate_source_ids() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "dup"
 type = "file"
 path = "a.jsonl"
 
-[[sources]]
+[[bria.sources]]
 id = "dup"
 type = "file"
 path = "b.jsonl"
@@ -162,17 +182,18 @@ path = "b.jsonl"
 fn validate_rejects_duplicate_task_ids() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "twice"
 driver = "local"
 cmd = "true"
 
-[[tasks]]
+[[bria.tasks]]
 id = "twice"
 driver = "local"
 cmd = "false"
@@ -186,16 +207,17 @@ cmd = "false"
 fn validate_rejects_duplicate_sink_ids() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[sinks]]
+[[bria.sinks]]
 id = "dup"
 type = "stream"
 
-[[sinks]]
+[[bria.sinks]]
 id = "dup"
 type = "stream"
 "#,
@@ -208,30 +230,31 @@ type = "stream"
 fn validate_rejects_duplicate_pipeline_ids() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "twice"
 source = "s"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "process"
 task = "noop"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "twice"
 source = "s"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st2"
 type = "process"
 task = "noop"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -245,10 +268,11 @@ cmd = "true"
 fn validate_rejects_jitter_above_one() {
     let cfg = parse(
         r#"
-[global.retry]
+[bria]
+[bria.global.retry]
 jitter = 1.1
 
-[[sources]]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
@@ -265,10 +289,11 @@ path = "u.jsonl"
 fn validate_rejects_jitter_below_zero() {
     let cfg = parse(
         r#"
-[global.retry]
+[bria]
+[bria.global.retry]
 jitter = -0.1
 
-[[sources]]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
@@ -285,10 +310,11 @@ path = "u.jsonl"
 fn validate_rejects_pg_backend_without_pg_url() {
     let cfg = parse(
         r#"
-[global.state]
+[bria]
+[bria.global.state]
 backend = "pg"
 
-[[sources]]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
@@ -305,11 +331,12 @@ path = "u.jsonl"
 fn validate_accepts_pg_backend_with_pg_url() {
     let cfg = parse(
         r#"
-[global.state]
+[bria]
+[bria.global.state]
 backend = "pg"
 pg_url = "postgres://localhost/bria"
 
-[[sources]]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
@@ -322,10 +349,11 @@ path = "u.jsonl"
 fn validate_rejects_http_source_when_server_disabled() {
     let cfg = parse(
         r#"
-[server]
+[bria]
+[bria.server]
 enabled = false
 
-[[sources]]
+[[bria.sources]]
 id = "incoming"
 type = "http"
 path = "events"
@@ -341,10 +369,11 @@ path = "events"
 fn validate_rejects_webhook_source_when_server_disabled() {
     let cfg = parse(
         r#"
-[server]
+[bria]
+[bria.server]
 enabled = false
 
-[[sources]]
+[[bria.sources]]
 id = "wh"
 type = "webhook"
 path = "hooks"
@@ -360,28 +389,29 @@ path = "hooks"
 fn validate_rejects_stream_sink_when_server_disabled() {
     let cfg = parse(
         r#"
-[server]
+[bria]
+[bria.server]
 enabled = false
 
-[[sources]]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[sinks]]
+[[bria.sinks]]
 id = "live"
 type = "stream"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 source = "s"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "process"
 task = "noop"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -397,22 +427,23 @@ cmd = "true"
 fn validate_rejects_pipeline_sink_referencing_unknown_id() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 source = "s"
 sinks = ["ghost"]
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "process"
 task = "noop"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -427,25 +458,26 @@ cmd = "true"
 fn validate_rejects_pipeline_failure_sink_referencing_unknown_id() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 source = "s"
 
-[pipelines.failure]
+[bria.pipelines.failure]
 action = "dead_letter"
 sink = "phantom"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "process"
 task = "noop"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -459,24 +491,25 @@ cmd = "true"
 fn validate_rejects_dead_letter_without_sink() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 source = "s"
 
-[pipelines.failure]
+[bria.pipelines.failure]
 action = "dead_letter"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "process"
 task = "noop"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -495,22 +528,23 @@ cmd = "true"
 fn validate_rejects_step_sink_referencing_unknown_id() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 source = "s"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "process"
 task = "noop"
 sinks = ["nowhere"]
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -524,25 +558,26 @@ cmd = "true"
 fn validate_rejects_step_routing_sink_referencing_unknown_id() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 source = "s"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "process"
 task = "noop"
 
-[[pipelines.steps.routing]]
+[[bria.pipelines.steps.routing]]
 condition = "true"
 sinks = ["vanished"]
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -557,25 +592,26 @@ cmd = "true"
 fn validate_rejects_step_failure_sink_referencing_unknown_id() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 source = "s"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "process"
 task = "noop"
 
-[pipelines.steps.failure]
+[bria.pipelines.steps.failure]
 action = "dead_letter"
 sink = "missing"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -591,24 +627,25 @@ cmd = "true"
 fn validate_collects_multiple_errors_into_joined_message() {
     let cfg = parse(
         r#"
-[server]
+[bria]
+[bria.server]
 enabled = false
 
-[[sources]]
+[[bria.sources]]
 id = "dup_source"
 type = "webhook"
 path = "hooks"
 
-[[sources]]
+[[bria.sources]]
 id = "dup_source"
 type = "webhook"
 path = "other"
 
-[[sinks]]
+[[bria.sinks]]
 id = "dup_sink"
 type = "stream"
 
-[[sinks]]
+[[bria.sinks]]
 id = "dup_sink"
 type = "stream"
 "#,
@@ -628,7 +665,8 @@ type = "stream"
 fn validate_rejects_file_source_without_path() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 "#,
@@ -641,7 +679,8 @@ type = "file"
 fn validate_rejects_sqlite_source_without_path() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "sqlite"
 "#,
@@ -654,7 +693,8 @@ type = "sqlite"
 fn validate_rejects_cron_source_without_schedule() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "cron"
 "#,
@@ -667,7 +707,8 @@ type = "cron"
 fn validate_rejects_pg_source_without_url() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "pg"
 "#,
@@ -680,7 +721,8 @@ type = "pg"
 fn validate_rejects_queue_source_without_url() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "queue"
 "#,
@@ -693,10 +735,11 @@ type = "queue"
 fn validate_rejects_http_source_without_path() {
     let cfg = parse(
         r#"
-[server]
+[bria]
+[bria.server]
 enabled = true
 
-[[sources]]
+[[bria.sources]]
 id = "s"
 type = "http"
 "#,
@@ -709,10 +752,11 @@ type = "http"
 fn validate_rejects_webhook_source_without_path() {
     let cfg = parse(
         r#"
-[server]
+[bria]
+[bria.server]
 enabled = true
 
-[[sources]]
+[[bria.sources]]
 id = "s"
 type = "webhook"
 "#,
@@ -729,12 +773,13 @@ type = "webhook"
 fn validate_rejects_unknown_driver() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "t"
 driver = "quantum"
 cmd = "entangle"
@@ -748,12 +793,13 @@ cmd = "entangle"
 fn validate_rejects_docker_without_docker_section() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "t"
 driver = "docker"
 cmd = "echo"
@@ -762,7 +808,7 @@ cmd = "echo"
     let err = cfg.validate().expect_err("docker without config must fail");
     assert!(
         err.to_string()
-            .contains("[tasks.docker] section is missing")
+            .contains("[bria.tasks.docker] section is missing")
     );
 }
 
@@ -770,36 +816,41 @@ cmd = "echo"
 fn validate_rejects_wasm_without_wasm_section() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "t"
 driver = "wasm"
 cmd = "echo"
 "#,
     );
     let err = cfg.validate().expect_err("wasm without config must fail");
-    assert!(err.to_string().contains("[tasks.wasm] section is missing"));
+    assert!(
+        err.to_string()
+            .contains("[bria.tasks.wasm] section is missing")
+    );
 }
 
 #[test]
 fn validate_rejects_task_jitter_above_one() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "t"
 driver = "local"
 cmd = "true"
 
-[tasks.retry]
+[bria.tasks.retry]
 jitter = 1.5
 "#,
     );
@@ -814,12 +865,13 @@ jitter = 1.5
 fn validate_accepts_local_task() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "t"
 driver = "local"
 cmd = "true"
@@ -832,17 +884,18 @@ cmd = "true"
 fn validate_accepts_docker_task_with_config() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "t"
 driver = "docker"
 cmd = "echo"
 
-[tasks.docker]
+[bria.tasks.docker]
 flags = ["--rm"]
 "#,
     );
@@ -855,17 +908,18 @@ flags = ["--rm"]
 fn validate_accepts_wasm_task_with_config() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "t"
 driver = "wasm"
 cmd = "module.wasm"
 
-[tasks.wasm]
+[bria.tasks.wasm]
 max_memory_pages = 128
 "#,
     );
@@ -881,12 +935,13 @@ max_memory_pages = 128
 fn validate_rejects_file_sink_without_path() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[sinks]]
+[[bria.sinks]]
 id = "sk"
 type = "file"
 "#,
@@ -901,12 +956,13 @@ type = "file"
 fn validate_rejects_webhook_sink_without_url() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[sinks]]
+[[bria.sinks]]
 id = "sk"
 type = "webhook"
 "#,
@@ -921,12 +977,13 @@ type = "webhook"
 fn validate_rejects_queue_sink_without_url() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[sinks]]
+[[bria.sinks]]
 id = "sk"
 type = "queue"
 "#,
@@ -941,12 +998,13 @@ type = "queue"
 fn validate_rejects_pg_sink_without_url() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[sinks]]
+[[bria.sinks]]
 id = "sk"
 type = "pg"
 "#,
@@ -959,12 +1017,13 @@ type = "pg"
 fn validate_rejects_sqlite_sink_without_path() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[sinks]]
+[[bria.sinks]]
 id = "sk"
 type = "sqlite"
 "#,
@@ -980,15 +1039,16 @@ type = "sqlite"
 fn validate_accepts_stream_sink_without_additional_requirements() {
     let cfg = parse(
         r#"
-[server]
+[bria]
+[bria.server]
 enabled = true
 
-[[sources]]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[sinks]]
+[[bria.sinks]]
 id = "sk"
 type = "stream"
 "#,
@@ -1004,16 +1064,17 @@ type = "stream"
 fn validate_rejects_pipeline_with_unknown_scalar_source() {
     let cfg = parse(
         r#"
-[[pipelines]]
+[bria]
+[[bria.pipelines]]
 id = "pl"
 source = "nowhere"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "process"
 task = "noop"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -1027,18 +1088,19 @@ cmd = "true"
 fn validate_rejects_pipeline_with_unknown_array_source() {
     let cfg = parse(
         r#"
-[[pipelines]]
+[bria]
+[[bria.pipelines]]
 id = "pl"
 
-[[pipelines.sources]]
+[[bria.pipelines.sources]]
 source = "ghost"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "process"
 task = "noop"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -1052,15 +1114,16 @@ cmd = "true"
 fn validate_rejects_pipeline_with_no_sources() {
     let cfg = parse(
         r#"
-[[pipelines]]
+[bria]
+[[bria.pipelines]]
 id = "pl"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "process"
 task = "noop"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -1074,31 +1137,32 @@ cmd = "true"
 fn validate_rejects_multi_source_without_merge() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "a"
 type = "file"
 path = "a.jsonl"
 
-[[sources]]
+[[bria.sources]]
 id = "b"
 type = "file"
 path = "b.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 
-[[pipelines.sources]]
+[[bria.pipelines.sources]]
 source = "a"
 
-[[pipelines.sources]]
+[[bria.pipelines.sources]]
 source = "b"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "process"
 task = "noop"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -1109,7 +1173,7 @@ cmd = "true"
         .expect_err("multi-source without merge must fail");
     assert!(
         err.to_string()
-            .contains("has multiple sources but no [pipelines.merge] section")
+            .contains("has multiple sources but no [bria.pipelines.merge] section")
     );
 }
 
@@ -1117,35 +1181,36 @@ cmd = "true"
 fn validate_rejects_invalid_merge_strategy() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "a"
 type = "file"
 path = "a.jsonl"
 
-[[sources]]
+[[bria.sources]]
 id = "b"
 type = "file"
 path = "b.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 
-[[pipelines.sources]]
+[[bria.pipelines.sources]]
 source = "a"
 
-[[pipelines.sources]]
+[[bria.pipelines.sources]]
 source = "b"
 
-[pipelines.merge]
+[bria.pipelines.merge]
 strategy = "telepathic"
 correlation_key = "id"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "process"
 task = "noop"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -1160,36 +1225,37 @@ cmd = "true"
 fn validate_rejects_merge_with_both_correlation_key_and_expr() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "a"
 type = "file"
 path = "a.jsonl"
 
-[[sources]]
+[[bria.sources]]
 id = "b"
 type = "file"
 path = "b.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 
-[[pipelines.sources]]
+[[bria.pipelines.sources]]
 source = "a"
 
-[[pipelines.sources]]
+[[bria.pipelines.sources]]
 source = "b"
 
-[pipelines.merge]
+[bria.pipelines.merge]
 strategy = "any"
 correlation_key = "id"
 correlation_expr = "a.job.id == b.job.id"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "process"
 task = "noop"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -1205,34 +1271,35 @@ cmd = "true"
 fn validate_rejects_merge_with_neither_correlation_key_nor_expr() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "a"
 type = "file"
 path = "a.jsonl"
 
-[[sources]]
+[[bria.sources]]
 id = "b"
 type = "file"
 path = "b.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 
-[[pipelines.sources]]
+[[bria.pipelines.sources]]
 source = "a"
 
-[[pipelines.sources]]
+[[bria.pipelines.sources]]
 source = "b"
 
-[pipelines.merge]
+[bria.pipelines.merge]
 strategy = "any"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "process"
 task = "noop"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -1251,35 +1318,36 @@ cmd = "true"
 fn validate_accepts_merge_all_with_correlation_key() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "a"
 type = "file"
 path = "a.jsonl"
 
-[[sources]]
+[[bria.sources]]
 id = "b"
 type = "file"
 path = "b.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 
-[[pipelines.sources]]
+[[bria.pipelines.sources]]
 source = "a"
 
-[[pipelines.sources]]
+[[bria.pipelines.sources]]
 source = "b"
 
-[pipelines.merge]
+[bria.pipelines.merge]
 strategy = "all"
 correlation_key = "order_id"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "process"
 task = "noop"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -1293,35 +1361,36 @@ cmd = "true"
 fn validate_accepts_merge_any_with_correlation_expr() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "a"
 type = "file"
 path = "a.jsonl"
 
-[[sources]]
+[[bria.sources]]
 id = "b"
 type = "file"
 path = "b.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 
-[[pipelines.sources]]
+[[bria.pipelines.sources]]
 source = "a"
 
-[[pipelines.sources]]
+[[bria.pipelines.sources]]
 source = "b"
 
-[pipelines.merge]
+[bria.pipelines.merge]
 strategy = "any"
 correlation_expr = "a.job.id == b.job.id"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "process"
 task = "noop"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -1335,26 +1404,27 @@ cmd = "true"
 fn validate_rejects_duplicate_step_ids_in_pipeline() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 source = "s"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "twice"
 type = "process"
 task = "noop"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "twice"
 type = "process"
 task = "noop"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -1368,16 +1438,17 @@ cmd = "true"
 fn validate_rejects_process_step_without_task() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 source = "s"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "process"
 "#,
@@ -1392,16 +1463,17 @@ type = "process"
 fn validate_rejects_condition_step_without_expr() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 source = "s"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "condition"
 "#,
@@ -1416,16 +1488,17 @@ type = "condition"
 fn validate_rejects_condition_skip_to_with_unknown_target() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 source = "s"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "condition"
 expr = "true"
@@ -1442,16 +1515,17 @@ skip_to = "never-here"
 fn validate_rejects_condition_with_invalid_action() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 source = "s"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "condition"
 expr = "true"
@@ -1469,16 +1543,17 @@ action = "levitate"
 fn validate_rejects_map_step_without_set_entries() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 source = "s"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "map"
 "#,
@@ -1486,7 +1561,7 @@ type = "map"
     let err = cfg.validate().expect_err("map step without set must fail");
     assert!(
         err.to_string()
-            .contains("requires at least one [[pipelines.steps.set]] entry")
+            .contains("requires at least one [[bria.pipelines.steps.set]] entry")
     );
 }
 
@@ -1494,22 +1569,23 @@ type = "map"
 fn validate_rejects_depends_on_unknown_step() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 source = "s"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "process"
 task = "noop"
 depends_on = ["phantom"]
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -1526,24 +1602,25 @@ cmd = "true"
 fn validate_rejects_step_jitter_above_one() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 source = "s"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "process"
 task = "noop"
 
-[pipelines.steps.retry]
+[bria.pipelines.steps.retry]
 jitter = 2.0
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -1560,24 +1637,25 @@ cmd = "true"
 fn validate_rejects_step_dead_letter_without_sink() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 source = "s"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "st"
 type = "process"
 task = "noop"
 
-[pipelines.steps.failure]
+[bria.pipelines.steps.failure]
 action = "dead_letter"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -1596,28 +1674,29 @@ cmd = "true"
 fn validate_rejects_cycle_in_step_dag() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 source = "s"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "A"
 type = "process"
 task = "noop"
 depends_on = ["B"]
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "B"
 type = "process"
 task = "noop"
 depends_on = ["A"]
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -1631,26 +1710,27 @@ cmd = "true"
 fn validate_accepts_linear_pipeline_with_implicit_deps() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 source = "s"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "first"
 type = "process"
 task = "noop"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "second"
 type = "process"
 task = "noop"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -1664,40 +1744,41 @@ cmd = "true"
 fn validate_accepts_diamond_dag() {
     let cfg = parse(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "s"
 type = "file"
 path = "u.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "pl"
 source = "s"
 concurrency = 2
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "root"
 type = "process"
 task = "noop"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "left"
 type = "process"
 task = "noop"
 depends_on = ["root"]
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "right"
 type = "process"
 task = "noop"
 depends_on = ["root"]
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "join"
 type = "process"
 task = "noop"
 depends_on = ["left", "right"]
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
@@ -2396,4 +2477,52 @@ fn cli_is_ping_returns_false_without_command() {
     use clap::Parser;
     let cli = bria::Cli::try_parse_from(["bria"]).expect("parse");
     assert!(!cli.is_ping());
+}
+
+#[test]
+fn cli_recognizes_check_subcommand() {
+    use clap::Parser;
+    let cli = bria::Cli::try_parse_from(["bria", "check"]).expect("parse");
+    assert!(cli.is_check());
+}
+
+#[test]
+fn validate_rejects_duplicate_internal_submission_routes() {
+    let config = Config::from_str_with_env(
+        r#"
+[bria]
+[bria.server]
+enabled = true
+
+[[bria.sources]]
+id = "one"
+type = "http"
+path = "jobs"
+
+[[bria.sources]]
+id = "two"
+type = "webhook"
+path = "/jobs/"
+"#,
+    )
+    .unwrap();
+
+    let error = config.validate().unwrap_err();
+    assert!(error.to_string().contains("configured more than once"));
+}
+
+#[test]
+fn validate_rejects_invalid_internal_server_prefix() {
+    let config = Config::from_str_with_env(
+        r#"
+[bria]
+[bria.server]
+enabled = true
+prefix = "internal/v1"
+"#,
+    )
+    .unwrap();
+
+    let error = config.validate().unwrap_err();
+    assert!(error.to_string().contains("server.prefix"));
 }

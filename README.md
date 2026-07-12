@@ -6,6 +6,8 @@
 
 Bria is a Rust-based multi-pipeline job orchestrator. It ingests jobs from files, HTTP/webhooks, AMQP, cron, PostgreSQL, or SQLite, runs local, Docker, or WebAssembly tasks, and emits results to files, webhooks, AMQP, databases, or live streams.
 
+**Documentation:** https://melonask.github.io/bria/
+
 ## Quick start
 
 ```bash
@@ -30,9 +32,12 @@ bria --config Config.toml
 | Command | Description |
 |---|---|
 | `bria --config Config.toml` | Validate configuration and run Bria. |
+| `bria check --config Config.toml` | Parse and strictly validate configuration, then exit. |
 | `bria ping` | Print `pong`. |
 
 `--config` can also be supplied with `BRIA_CONFIG`. The default is `Config.toml`.
+The command-line option takes precedence over `BRIA_CONFIG`; use the same path
+selection for `bria`, `bria check`, and container deployments.
 
 ## Feature flags
 
@@ -50,6 +55,7 @@ bria --config Config.toml
 ## Configuration model
 
 Bria uses a universal namespaced config format. Shared root sections define reusable profiles; Bria's behavior lives under `[bria]`.
+`[bria]` is required: unnested legacy configuration is rejected.
 
 ### Shared root sections Bria reads
 
@@ -157,6 +163,10 @@ Retry precedence: step > task > global. Backoff uses exponential delay and rando
 
 ### Server: `[bria.server]`
 
+This is Bria's internal worker/control server. Artur calls it after applying
+public gateway concerns such as authentication, payment, and challenge policy.
+Bria does not implement or duplicate those policies.
+
 | Key | Default | Description |
 |---|---:|---|
 | `enabled` | `false` | Enable HTTP server. Requires `--features server`. |
@@ -167,6 +177,24 @@ Retry precedence: step > task > global. Backoff uses exponential delay and rando
 | `dashboard_path_ref` | `""` | Path profile from `[paths]` for static dashboard. |
 | `shutdown_timeout_secs` | `5` | HTTP drain timeout. |
 | `max_body_bytes` | `52428800` | Server-wide body limit. |
+
+HTTP and webhook source paths must be unique, non-empty, and must not conflict
+with Bria control routes. `server.prefix` is exactly one non-empty path segment.
+
+#### Internal HTTP submission contract
+
+`POST /<prefix>/<source-path>` accepts JSON and returns an accepted durable job
+identity:
+
+```json
+{"status":"accepted","job_id":"01...","correlation_key":"request-..."}
+```
+
+`job_id` is the identity persisted with the job lifecycle and is the value for
+the cancellation route. Artur may send an opaque `Idempotency-Key` or
+`X-Correlation-ID`; Bria propagates it as `correlation_key` to the worker and
+state store. If both headers are sent they must match. Bria does not deduplicate
+requests or make payment/challenge decisions: Artur owns those gateway policies.
 
 ### Sources: `[[bria.sources]]`
 

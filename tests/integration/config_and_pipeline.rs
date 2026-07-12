@@ -1,10 +1,8 @@
 use bria::{Config, Job, run_pipeline_once};
 
 fn minimal_config() -> String {
-    format!(
-        "{}\n{}",
-        "[bria]",
-        r#"
+    r#"
+[bria]
 [[bria.sources]]
 id = "manual"
 type = "file"
@@ -42,7 +40,7 @@ format = "json"
 key = "greeting"
 name = "greeting"
 "#
-    )
+    .to_string()
 }
 
 #[test]
@@ -144,7 +142,7 @@ async fn sqlite_state_store_recovers_running_jobs_and_clears_completed_jobs() {
     let db_path = std::env::temp_dir().join(format!(
         "bria-state-test-{}-{}",
         std::process::id(),
-        ulid::Ulid::new()
+        ulid::Ulid::r#gen()
     ));
     let raw = format!(
         r#"
@@ -384,7 +382,7 @@ async fn directory_file_source_does_not_reemit_unchanged_files() {
     let unique = format!(
         "bria-dir-source-{}-{}",
         std::process::id(),
-        ulid::Ulid::new()
+        ulid::Ulid::r#gen()
     );
     let base = std::env::temp_dir().join(unique);
     let input_dir = base.join("jobs");
@@ -460,6 +458,32 @@ fn cli_ping_prints_pong() {
 
     assert!(output.status.success());
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "pong");
+}
+
+#[test]
+fn cli_check_validates_config_without_starting_workers() {
+    let config_path = std::env::temp_dir().join(format!("bria-check-{}.toml", ulid::Ulid::r#gen()));
+    std::fs::write(
+        &config_path,
+        r#"
+[bria]
+[[bria.sources]]
+id = "input"
+type = "file"
+path = "input.jsonl"
+"#,
+    )
+    .unwrap();
+
+    let binary = env!("CARGO_BIN_EXE_bria");
+    let output = std::process::Command::new(binary)
+        .args(["check", "--config", config_path.to_str().unwrap()])
+        .output()
+        .expect("bria check should execute");
+
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Configuration is valid"));
+    let _ = std::fs::remove_file(config_path);
 }
 
 #[tokio::test]

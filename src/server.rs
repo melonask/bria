@@ -37,15 +37,15 @@ pub struct AppState {
     pub broadcast_tx: Option<broadcast::Sender<serde_json::Value>>,
     /// In-memory cancellation signals, keyed by job id.
     pub cancel_signals: Arc<DashMap<String, Instant>>,
-    /// Pipeline pause notifiers: one Notify per pipeline id.
-    pub pipeline_pauses: Arc<DashMap<String, Arc<tokio::sync::Notify>>>,
+    /// Pipeline pause state, keyed by pipeline id.
+    pub pipeline_pauses: Arc<DashMap<String, Arc<crate::pipeline::PipelinePause>>>,
 }
 
 /// Result of starting the server: the join handle and the shared app state.
 pub struct ServerHandle {
     pub join_handle: Option<tokio::task::JoinHandle<()>>,
     pub cancel_signals: Arc<DashMap<String, Instant>>,
-    pub pipeline_pauses: Arc<DashMap<String, Arc<tokio::sync::Notify>>>,
+    pub pipeline_pauses: Arc<DashMap<String, Arc<crate::pipeline::PipelinePause>>>,
 }
 
 /// Start the HTTP server if enabled.
@@ -348,22 +348,25 @@ async fn submit_job_handler(
     let payload: serde_json::Value = serde_json::from_slice(&body)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid JSON: {e}")))?;
 
-    // Create job
+    let correlation_key = submission_correlation_key(&headers)?;
+
+    // Create the durable job identity before enqueueing it. The worker persists
+    // that identity with its lifecycle state as soon as it is accepted.
     let job_id = if source.id_field.is_empty() {
-        ulid::Ulid::new().to_string()
+        ulid::Ulid::r#gen().to_string()
     } else {
         payload
             .get(&source.id_field)
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .unwrap_or_else(|| ulid::Ulid::new().to_string())
+            .unwrap_or_else(|| ulid::Ulid::r#gen().to_string())
     };
 
     let job = Job {
         id: job_id.clone(),
         source: source.id.clone(),
         payload,
-        correlation_key: None,
+        correlation_key: correlation_key.clone(),
         labels: source.labels.clone(),
     };
 
@@ -394,6 +397,7 @@ async fn submit_job_handler(
         Json(serde_json::json!({
             "status": "accepted",
             "job_id": job_id,
+            "correlation_key": correlation_key,
         })),
     ))
 }
@@ -656,6 +660,61 @@ fn source_path_from_uri_path(path: &str, prefix: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+/// Extract the caller's opaque correlation key without assigning any gateway
+/// policy to Bria. Artur may provide either standard `Idempotency-Key` or
+/// `X-Correlation-ID`; if both are present they must identify the same request.
+#[cfg(feature = "server")]
+fn submission_correlation_key(headers: &HeaderMap) -> Result<Option<String>, (StatusCode, String)> {
+    const MAX_CORRELATION_KEY_BYTES: usize = 512;
+
+    let idempotency_key = header_correlation_key(headers, "idempotency-key")?;
+    let correlation_id = header_correlation_key(headers, "x-correlation-id")?;
+    match (idempotency_key, correlation_id) {
+        (Some(idempotency_key), Some(correlation_id)) if idempotency_key != correlation_id => {
+            Err((
+                StatusCode::BAD_REQUEST,
+                "Idempotency-Key and X-Correlation-ID must match when both are supplied"
+                    .to_string(),
+            ))
+        }
+        (Some(key), _) | (_, Some(key)) => {
+            if key.len() > MAX_CORRELATION_KEY_BYTES {
+                Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("correlation key exceeds {MAX_CORRELATION_KEY_BYTES} bytes"),
+                ))
+            } else {
+                Ok(Some(key))
+            }
+        }
+        (None, None) => Ok(None),
+    }
+}
+
+#[cfg(feature = "server")]
+fn header_correlation_key(
+    headers: &HeaderMap,
+    name: &str,
+) -> Result<Option<String>, (StatusCode, String)> {
+    let Some(value) = headers.get(name) else {
+        return Ok(None);
+    };
+    let value = value.to_str().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("{name} must contain valid visible ASCII text"),
+        )
+    })?;
+    let value = value.trim();
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_graphic()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("{name} must be a non-empty visible ASCII value"),
+        ));
+    }
+    Ok(Some(value.to_string()))
+}
+
 /// POST /{prefix}/pipelines/{pipeline_id}/resume — resume a stopped pipeline.
 #[cfg(feature = "server")]
 async fn resume_pipeline_handler(
@@ -671,13 +730,14 @@ async fn resume_pipeline_handler(
         ));
     }
 
-    // Get or create the notifier and notify
-    let notify = state
+    // Record the request before waking waiters so a resume sent just before a
+    // worker starts waiting is retained.
+    let pause = state
         .pipeline_pauses
         .entry(pipeline_id.clone())
-        .or_insert_with(|| Arc::new(tokio::sync::Notify::new()))
+        .or_insert_with(|| Arc::new(crate::pipeline::PipelinePause::new()))
         .clone();
-    notify.notify_waiters();
+    pause.resume();
 
     tracing::info!("Pipeline '{}' resumed by operator", pipeline_id);
 

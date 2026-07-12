@@ -8,9 +8,15 @@ use crate::error::Result;
 /// Template engine for rendering placeholders in configuration values.
 /// Uses minijinja with strict undefined behavior — missing values are errors.
 pub struct TemplateEngine {
-    env: Mutex<Environment<'static>>,
-    template_names: Mutex<HashMap<String, String>>,
+    cache: Mutex<TemplateCache>,
     env_snapshot: HashMap<String, Value>,
+}
+
+/// A template environment and its source-to-name index share one lock so a
+/// cache miss cannot interleave with another insertion.
+struct TemplateCache {
+    env: Environment<'static>,
+    names: HashMap<String, String>,
 }
 
 impl TemplateEngine {
@@ -23,8 +29,10 @@ impl TemplateEngine {
             .map(|(key, val)| (key, Value::from(val)))
             .collect();
         Self {
-            env: Mutex::new(env),
-            template_names: Mutex::new(HashMap::new()),
+            cache: Mutex::new(TemplateCache {
+                env,
+                names: HashMap::new(),
+            }),
             env_snapshot,
         }
     }
@@ -33,16 +41,7 @@ impl TemplateEngine {
     /// The context provides job, steps, env, now, and now_unix variables.
     pub fn render(&self, template: &str, ctx: &Context) -> Result<String> {
         let vars = Value::from(self.build_template_vars(ctx));
-        let template_name = self.get_or_add_template_name(template)?;
-        let env = self
-            .env
-            .lock()
-            .expect("template environment mutex poisoned");
-        let tmpl = env
-            .get_template(&template_name)
-            .map_err(crate::error::Error::Template)?;
-        let rendered = tmpl.render(&vars).map_err(crate::error::Error::Template)?;
-        Ok(rendered)
+        self.render_vars(template, &vars)
     }
 
     /// Build the template variable context from a Context.
@@ -135,45 +134,32 @@ impl TemplateEngine {
 
         let vars = Value::from(vars);
 
-        let template_name = self.get_or_add_template_name(template)?;
-        let env = self
-            .env
-            .lock()
-            .expect("template environment mutex poisoned");
-        let tmpl = env
-            .get_template(&template_name)
-            .map_err(crate::error::Error::Template)?;
-        let rendered = tmpl.render(&vars).map_err(crate::error::Error::Template)?;
-        Ok(rendered)
+        self.render_vars(template, &vars)
     }
 
-    fn get_or_add_template_name(&self, template: &str) -> Result<String> {
-        if let Some(name) = self
-            .template_names
-            .lock()
-            .expect("template-name cache mutex poisoned")
-            .get(template)
-            .cloned()
-        {
-            return Ok(name);
-        }
-
-        let mut names = self
-            .template_names
-            .lock()
-            .expect("template-name cache mutex poisoned");
-        if let Some(name) = names.get(template).cloned() {
-            return Ok(name);
-        }
-
-        let name = format!("inline:{}", names.len());
-        self.env
-            .lock()
-            .expect("template environment mutex poisoned")
-            .add_template_owned(name.clone(), template.to_string())
-            .map_err(crate::error::Error::Template)?;
-        names.insert(template.to_string(), name.clone());
-        Ok(name)
+    /// Render while holding the combined cache lock exactly once. MiniJinja
+    /// templates borrow the environment, so both lookup and rendering must be
+    /// completed before releasing it.
+    fn render_vars(&self, source: &str, vars: &Value) -> Result<String> {
+        let mut cache = self.cache.lock().expect("template cache mutex poisoned");
+        let name = match cache.names.get(source) {
+            Some(name) => name.clone(),
+            None => {
+                let name = format!("inline:{}", cache.names.len());
+                cache
+                    .env
+                    .add_template_owned(name.clone(), source.to_string())
+                    .map_err(crate::error::Error::Template)?;
+                cache.names.insert(source.to_string(), name.clone());
+                name
+            }
+        };
+        cache
+            .env
+            .get_template(&name)
+            .map_err(crate::error::Error::Template)?
+            .render(vars)
+            .map_err(crate::error::Error::Template)
     }
 }
 

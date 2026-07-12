@@ -17,15 +17,16 @@ use bria::{Config, Context, Job, PipelineResult, StepResult, create_store};
 fn config_with_sink(sink_def: &str) -> String {
     format!(
         r#"
-[server]
+[bria]
+[bria.server]
 enabled = true
 
-[[sources]]
+[[bria.sources]]
 id = "manual"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "sh"
@@ -33,10 +34,10 @@ args = ["-c", "true"]
 stdout = {{ mode = "discard" }}
 stderr = {{ mode = "discard" }}
 
-[[sinks]]
+[[bria.sinks]]
 {sink_def}
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "manual"
 sinks = ["sink"]
@@ -88,7 +89,7 @@ async fn file_sink_writes_json_result_by_default() {
     let dir = std::env::temp_dir().join(format!(
         "bria-fs-default-{}-{}",
         std::process::id(),
-        ulid::Ulid::new()
+        ulid::Ulid::r#gen()
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("out.jsonl");
@@ -126,7 +127,7 @@ async fn file_sink_renders_custom_template() {
     let dir = std::env::temp_dir().join(format!(
         "bria-fs-tpl-{}-{}",
         std::process::id(),
-        ulid::Ulid::new()
+        ulid::Ulid::r#gen()
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("templated.jsonl");
@@ -162,7 +163,7 @@ async fn file_sink_renders_path_template_with_job_id() {
     let dir = std::env::temp_dir().join(format!(
         "bria-fs-path-{}-{}",
         std::process::id(),
-        ulid::Ulid::new()
+        ulid::Ulid::r#gen()
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let path_pattern = dir.join("results-{{job.id}}.jsonl");
@@ -201,7 +202,7 @@ async fn file_sink_creates_parent_directories_if_missing() {
     let dir = std::env::temp_dir().join(format!(
         "bria-fs-mkdir-{}-{}",
         std::process::id(),
-        ulid::Ulid::new()
+        ulid::Ulid::r#gen()
     ));
     // Do NOT create the dir — SinkDispatcher should create it
     let path = dir.join("nested").join("deep.jsonl");
@@ -243,7 +244,7 @@ async fn sqlite_sink_creates_table_and_inserts_step_rows() {
     let db_name = format!(
         "bria-sink-sqlite-{}-{}.db",
         std::process::id(),
-        ulid::Ulid::new()
+        ulid::Ulid::r#gen()
     );
     let db_path = std::env::temp_dir().join(&db_name);
     let db_path_str = db_path.to_str().unwrap();
@@ -251,12 +252,13 @@ async fn sqlite_sink_creates_table_and_inserts_step_rows() {
 
     let raw = format!(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "manual"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "sh"
@@ -264,15 +266,15 @@ args = ["-c", "true"]
 stdout = {{ mode = "discard" }}
 stderr = {{ mode = "discard" }}
 
-[[sinks]]
+[[bria.sinks]]
 id = "sink"
 type = "sqlite"
 path = "{db_path_str}"
 
-[sinks.table]
+[bria.sinks.table]
 name = "results"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "manual"
 sinks = ["sink"]
@@ -354,7 +356,7 @@ async fn sqlite_sink_inserts_multiple_step_results() {
     let db_name = format!(
         "bria-sink-sqlite-multi-{}-{}.db",
         std::process::id(),
-        ulid::Ulid::new()
+        ulid::Ulid::r#gen()
     );
     let db_path = std::env::temp_dir().join(&db_name);
     let db_path_str = db_path.to_str().unwrap();
@@ -362,12 +364,13 @@ async fn sqlite_sink_inserts_multiple_step_results() {
 
     let raw = format!(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "manual"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "sh"
@@ -375,15 +378,15 @@ args = ["-c", "true"]
 stdout = {{ mode = "discard" }}
 stderr = {{ mode = "discard" }}
 
-[[sinks]]
+[[bria.sinks]]
 id = "sink"
 type = "sqlite"
 path = "{db_path_str}"
 
-[sinks.table]
+[bria.sinks.table]
 name = "results"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "manual"
 sinks = ["sink"]
@@ -648,7 +651,8 @@ timeout_secs = 5"#
 #[tokio::test]
 async fn start_server_disabled_returns_handle_with_no_join_handle() {
     let raw = r#"
-[server]
+[bria]
+[bria.server]
 enabled = false
 "#;
 
@@ -666,7 +670,8 @@ enabled = false
 #[tokio::test]
 async fn start_server_enabled_binds_and_serves_ping() {
     let raw = r#"
-[server]
+[bria]
+[bria.server]
 enabled = true
 port = 0
 bind = "127.0.0.1"
@@ -733,31 +738,32 @@ async fn server_with_api_key(
     // This config uses a webhook source so routes are registered
     let raw = format!(
         r#"
-[server]
+[bria]
+[bria.server]
 enabled = true
 port = {port}
 bind = "127.0.0.1"
 prefix = "v1"
 api_key = "{api_key}"
 
-[[sources]]
+[[bria.sources]]
 id = "events"
 type = "webhook"
 path = "events"
 
-[[sources]]
+[[bria.sources]]
 id = "manual"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
 stdout = {{ mode = "discard" }}
 stderr = {{ mode = "discard" }}
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "manual"
 "#
@@ -785,7 +791,8 @@ async fn ping_passes_when_no_api_key_is_set() {
 
     let raw = format!(
         r#"
-[server]
+[bria]
+[bria.server]
 enabled = true
 port = {port}
 bind = "127.0.0.1"
@@ -913,31 +920,32 @@ async fn server_with_http_source(
 
     let raw = format!(
         r#"
-[server]
+[bria]
+[bria.server]
 enabled = true
 port = {port}
 bind = "127.0.0.1"
 prefix = "v1"
 
-[[sources]]
+[[bria.sources]]
 id = "mysource"
 type = "webhook"
 path = "{source_path}"
 hmac_secret = "{secret}"
 
-[[sources]]
+[[bria.sources]]
 id = "manual"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
 stdout = {{ mode = "discard" }}
 stderr = {{ mode = "discard" }}
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "test-pipeline"
 source = "manual"
 "#
@@ -978,6 +986,56 @@ async fn submit_job_returns_202_with_job_id_for_webhook_source() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "accepted");
     assert!(!body["job_id"].as_str().unwrap().is_empty());
+
+    let _ = shutdown_tx.send(true);
+    if let Some(join) = handle.join_handle {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), join).await;
+    }
+}
+
+#[tokio::test]
+async fn submit_job_propagates_artur_idempotency_key_as_correlation_key() {
+    let (port, shutdown_tx, handle, mut rx) = server_with_http_source("events", "").await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://127.0.0.1:{port}/v1/events"))
+        .header("idempotency-key", "artur-request-42")
+        .json(&serde_json::json!({"key": "value"}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["correlation_key"], "artur-request-42");
+    assert!(!body["job_id"].as_str().unwrap().is_empty());
+
+    let job = rx.recv().await.unwrap();
+    assert_eq!(job.id, body["job_id"].as_str().unwrap());
+    assert_eq!(job.correlation_key.as_deref(), Some("artur-request-42"));
+
+    let _ = shutdown_tx.send(true);
+    if let Some(join) = handle.join_handle {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), join).await;
+    }
+}
+
+#[tokio::test]
+async fn submit_job_rejects_conflicting_correlation_headers() {
+    let (port, shutdown_tx, handle, _rx) = server_with_http_source("events", "").await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://127.0.0.1:{port}/v1/events"))
+        .header("idempotency-key", "artur-request-42")
+        .header("x-correlation-id", "different-request")
+        .json(&serde_json::json!({"key": "value"}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
     let _ = shutdown_tx.send(true);
     if let Some(join) = handle.join_handle {
@@ -1178,30 +1236,31 @@ async fn server_with_stream_sink() -> (
 
     let raw = format!(
         r#"
-[server]
+[bria]
+[bria.server]
 enabled = true
 port = {port}
 bind = "127.0.0.1"
 prefix = "v1"
 
-[[sources]]
+[[bria.sources]]
 id = "manual"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
 stdout = {{ mode = "discard" }}
 stderr = {{ mode = "discard" }}
 
-[[sinks]]
+[[bria.sinks]]
 id = "stream"
 type = "stream"
 sse = "events"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "manual"
 "#
@@ -1266,30 +1325,31 @@ async fn sse_endpoint_without_broadcast_returns_error_event() {
 
     let raw = format!(
         r#"
-[server]
+[bria]
+[bria.server]
 enabled = true
 port = {port}
 bind = "127.0.0.1"
 prefix = "v1"
 
-[[sources]]
+[[bria.sources]]
 id = "manual"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
 stdout = {{ mode = "discard" }}
 stderr = {{ mode = "discard" }}
 
-[[sinks]]
+[[bria.sinks]]
 id = "stream"
 type = "stream"
 sse = "events"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "manual"
 "#
@@ -1338,19 +1398,20 @@ async fn pipeline_sink_dispatches_failure_result_to_dead_letter_sink() {
     let dir = std::env::temp_dir().join(format!(
         "bria-dl-{}-{}",
         std::process::id(),
-        ulid::Ulid::new()
+        ulid::Ulid::r#gen()
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let dead_letter_path = dir.join("dead.jsonl");
 
     let raw = format!(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "manual"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "fail-task"
 driver = "local"
 cmd = "sh"
@@ -1358,21 +1419,21 @@ args = ["-c", "exit 99"]
 stdout = {{ mode = "discard" }}
 stderr = {{ mode = "discard" }}
 
-[[sinks]]
+[[bria.sinks]]
 id = "dead"
 type = "file"
 path = "{}"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "manual"
 sinks = ["dead"]
 
-[pipelines.failure]
+[bria.pipelines.failure]
 action = "dead_letter"
 sink = "dead"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "fail-step"
 type = "process"
 task = "fail-task"
@@ -1448,7 +1509,7 @@ async fn sink_routing_step_sends_to_condition_matched_sink() {
     let dir = std::env::temp_dir().join(format!(
         "bria-route-{}-{}",
         std::process::id(),
-        ulid::Ulid::new()
+        ulid::Ulid::r#gen()
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let path_ok = dir.join("ok.jsonl");
@@ -1456,40 +1517,41 @@ async fn sink_routing_step_sends_to_condition_matched_sink() {
 
     let raw = format!(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "manual"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "noop"
 driver = "local"
 cmd = "true"
 stdout = {{ mode = "discard" }}
 stderr = {{ mode = "discard" }}
 
-[[sinks]]
+[[bria.sinks]]
 id = "ok-sink"
 type = "file"
 path = "{}"
 
-[[sinks]]
+[[bria.sinks]]
 id = "fallback-sink"
 type = "file"
 path = "{}"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "manual"
 sinks = ["fallback-sink"]
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "step"
 type = "process"
 task = "noop"
 
 # Routing: when exit_code == 0, send to ok-sink
-[[pipelines.steps.routing]]
+[[bria.pipelines.steps.routing]]
 condition = "steps.step.exit_code == 0"
 sinks = ["ok-sink"]
 "#,
@@ -1563,10 +1625,11 @@ sinks = ["ok-sink"]
 #[tokio::test]
 async fn create_store_with_memory_backend_succeeds() {
     let raw = r#"
-[global.state]
+[bria]
+[bria.global.state]
 backend = "memory"
 
-[[sources]]
+[[bria.sources]]
 id = "manual"
 type = "file"
 path = "unused.jsonl"
@@ -1590,10 +1653,11 @@ path = "unused.jsonl"
 #[tokio::test]
 async fn create_store_rejects_unknown_backend() {
     let raw = r#"
-[global.state]
+[bria]
+[bria.global.state]
 backend = "redis"
 
-[[sources]]
+[[bria.sources]]
 id = "manual"
 type = "file"
 path = "unused.jsonl"

@@ -21,6 +21,10 @@
 #   transport = "<id>"  resolves [transports.<transport_kind>.<id>]
 #
 # See README.md for the full parameter reference.
+#
+# The optional HTTP server is internal worker/control infrastructure. Artur
+# applies public authentication, payment, and challenge policy before calling it.
+# Bria accepts Idempotency-Key or X-Correlation-ID as opaque correlation metadata.
 
 version = 1
 

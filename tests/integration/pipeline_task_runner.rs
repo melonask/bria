@@ -28,21 +28,22 @@ fn job_with_payload(id: &str, source: &str, payload: serde_json::Value) -> Job {
 #[tokio::test]
 async fn single_process_step_succeeds() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "ok"
 driver = "local"
 cmd = "true"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "s"
 type = "process"
 task = "ok"
@@ -58,32 +59,33 @@ task = "ok"
 #[tokio::test]
 async fn retry_exhaustion_results_in_pipeline_failure() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "always-fail"
 driver = "local"
 cmd = "sh"
 args = ["-c", "exit 9"]
 
-[global.retry]
+[bria.global.retry]
 max_attempts = 0
 base_delay_ms = 1
 max_delay_ms = 10
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "failing"
 type = "process"
 task = "always-fail"
 
-[pipelines.steps.retry]
+[bria.pipelines.steps.retry]
 max_attempts = 3
 base_delay_ms = 1
 max_delay_ms = 10
@@ -122,32 +124,33 @@ async fn retry_succeeds_on_second_attempt() {
     let marker_str = marker.to_string_lossy().to_string();
     let config_str = format!(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "retry-task"
 driver = "local"
 cmd = "sh"
 args = ["-c", "if [ -f '{0}' ]; then exit 0; else touch '{0}' && exit 8; fi"]
 
-[global.retry]
+[bria.global.retry]
 max_attempts = 0
 base_delay_ms = 1
 max_delay_ms = 10
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "step"
 type = "process"
 task = "retry-task"
 
-[pipelines.steps.retry]
+[bria.pipelines.steps.retry]
 max_attempts = 2
 base_delay_ms = 1
 max_delay_ms = 10
@@ -172,50 +175,51 @@ jitter = 0.0
 #[tokio::test]
 async fn parallel_step_failure_fails_pipeline_but_preserves_sibling_result() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "root-task"
 driver = "local"
 cmd = "true"
 
-[[tasks]]
+[[bria.tasks]]
 id = "bad"
 driver = "local"
 cmd = "sh"
 args = ["-c", "exit 13"]
 
-[[tasks]]
+[[bria.tasks]]
 id = "good"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf ok"]
 
-[global.retry]
+[bria.global.retry]
 max_attempts = 0
 base_delay_ms = 1
 max_delay_ms = 10
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 concurrency = 2
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "root"
 type = "process"
 task = "root-task"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "left"
 type = "process"
 task = "bad"
 depends_on = ["root"]
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "right"
 type = "process"
 task = "good"
@@ -236,35 +240,36 @@ depends_on = ["root"]
 #[tokio::test]
 async fn condition_true_continues_pipeline() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "downstream"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf '{\"ran\":true}'"]
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "gate"
 type = "condition"
 expr = "true"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "work"
 type = "process"
 task = "downstream"
 
-[pipelines.steps.outputs]
+[bria.pipelines.steps.outputs]
 format = "json"
 
-[[pipelines.steps.outputs.fields]]
+[[bria.pipelines.steps.outputs.fields]]
 key = "ran"
 name = "ran"
 "#;
@@ -283,29 +288,30 @@ name = "ran"
 #[tokio::test]
 async fn condition_false_with_fail_action_fails_pipeline() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "never-run"
 driver = "local"
 cmd = "sh"
 args = ["-c", "exit 0"]
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "guard"
 type = "condition"
 expr = "false"
 action = "fail"
 reason = "payload rejected by guard"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "after"
 type = "process"
 task = "never-run"
@@ -323,16 +329,17 @@ task = "never-run"
 #[tokio::test]
 async fn condition_fail_without_reason_produces_default_message() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "gate"
 type = "condition"
 expr = "false"
@@ -350,42 +357,43 @@ action = "fail"
 async fn condition_skip_to_non_forward_target_advances_one_level() {
     // skip_to target is in the current level (or past) — proceeds to next level normally
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "after"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf '{\"reached\":true}'"]
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "first"
 type = "condition"
 expr = "true"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "skip-trigger"
 type = "condition"
 expr = "false"
 action = "skip_to"
 skip_to = "first"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "last"
 type = "process"
 task = "after"
 
-[pipelines.steps.outputs]
+[bria.pipelines.steps.outputs]
 format = "json"
 
-[[pipelines.steps.outputs.fields]]
+[[bria.pipelines.steps.outputs.fields]]
 key = "reached"
 name = "reached"
 "#;
@@ -403,16 +411,17 @@ name = "reached"
 #[tokio::test]
 async fn condition_skip_to_missing_target_fails_at_validation() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "gate"
 type = "condition"
 expr = "false"
@@ -432,16 +441,17 @@ skip_to = "nonexistent"
 #[tokio::test]
 async fn condition_unknown_action_fails_at_validation() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "gate"
 type = "condition"
 expr = "false"
@@ -460,16 +470,17 @@ action = "invalid_action"
 #[tokio::test]
 async fn condition_cel_parse_error_fails_pipeline() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "gate"
 type = "condition"
 expr = "syntax error ]["
@@ -490,27 +501,28 @@ action = "fail"
 #[tokio::test]
 async fn condition_evaluates_against_payload_fields() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "work"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf yes"]
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "gate"
 type = "condition"
 expr = "job.payload.approved == true"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "work"
 type = "process"
 task = "work"
@@ -524,37 +536,38 @@ task = "work"
 #[tokio::test]
 async fn condition_steps_can_reference_previous_step_results() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "first"
 driver = "local"
 cmd = "true"
 
-[[tasks]]
+[[bria.tasks]]
 id = "second"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf reached"]
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "one"
 type = "process"
 task = "first"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "gate"
 type = "condition"
 expr = "steps.one.exit_code == 0"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "two"
 type = "process"
 task = "second"
@@ -571,38 +584,39 @@ task = "second"
 #[tokio::test]
 async fn map_multiple_set_entries_apply_in_sequence() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "print"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf '%s %s' \"$1\" \"$2\"", "sh", "{{job.payload.first}}", "{{job.payload.second}}"]
 
-[tasks.stdout]
+[bria.tasks.stdout]
 mode = "capture"
 max_bytes = 128
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "shape"
 type = "map"
 
-[[pipelines.steps.set]]
+[[bria.pipelines.steps.set]]
 target = "job.payload.first"
 expr = "'hello'"
 
-[[pipelines.steps.set]]
+[[bria.pipelines.steps.set]]
 target = "job.payload.second"
 expr = "'world'"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "print"
 type = "process"
 task = "print"
@@ -617,20 +631,21 @@ task = "print"
 #[tokio::test]
 async fn map_single_segment_target_fails_pipeline() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "bad-map"
 type = "map"
 
-[[pipelines.steps.set]]
+[[bria.pipelines.steps.set]]
 target = "no_dot"
 expr = "42"
 "#;
@@ -650,20 +665,21 @@ expr = "42"
 #[tokio::test]
 async fn map_unknown_namespace_target_fails_pipeline() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "bad-ns"
 type = "map"
 
-[[pipelines.steps.set]]
+[[bria.pipelines.steps.set]]
 target = "steps.x.stdout"
 expr = "'value'"
 "#;
@@ -678,20 +694,21 @@ expr = "'value'"
 #[tokio::test]
 async fn map_non_object_payload_fails_pipeline() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "bad-payload"
 type = "map"
 
-[[pipelines.steps.set]]
+[[bria.pipelines.steps.set]]
 target = "job.payload.field"
 expr = "'value'"
 "#;
@@ -710,20 +727,21 @@ expr = "'value'"
 #[tokio::test]
 async fn map_eval_error_fails_pipeline() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "bad-expr"
 type = "map"
 
-[[pipelines.steps.set]]
+[[bria.pipelines.steps.set]]
 target = "job.payload.field"
 expr = "1/0"
 "#;
@@ -742,34 +760,35 @@ expr = "1/0"
 #[tokio::test]
 async fn map_deep_nested_target_creates_intermediate_objects() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "read-deep"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf '%s' \"$1\"", "sh", "{{job.payload.a.b.c}}"]
 
-[tasks.stdout]
+[bria.tasks.stdout]
 mode = "capture"
 max_bytes = 128
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "deep"
 type = "map"
 
-[[pipelines.steps.set]]
+[[bria.pipelines.steps.set]]
 target = "job.payload.a.b.c"
 expr = "'nested-value'"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "reader"
 type = "process"
 task = "read-deep"
@@ -789,37 +808,38 @@ task = "read-deep"
 #[tokio::test]
 async fn stdin_payload_mode_writes_job_payload_to_process() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "read-stdin"
 driver = "local"
 cmd = "sh"
 args = ["-c", "cat"]
 
-[tasks.stdin]
+[bria.tasks.stdin]
 mode = "payload"
 
-[tasks.stdout]
+[bria.tasks.stdout]
 mode = "capture"
 max_bytes = 1024
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "read"
 type = "process"
 task = "read-stdin"
 
-[pipelines.steps.outputs]
+[bria.pipelines.steps.outputs]
 format = "json"
 
-[[pipelines.steps.outputs.fields]]
+[[bria.pipelines.steps.outputs.fields]]
 key = "msg"
 name = "msg"
 "#;
@@ -833,29 +853,30 @@ name = "msg"
 #[tokio::test]
 async fn stdin_none_mode_closes_stdin_immediately() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "no-stdin"
 driver = "local"
 cmd = "sh"
 args = ["-c", "cat; true"]
 
-[tasks.stdin]
+[bria.tasks.stdin]
 mode = "none"
 
-[tasks.stdout]
+[bria.tasks.stdout]
 mode = "capture"
 max_bytes = 64
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "no-stdin"
@@ -872,31 +893,32 @@ task = "no-stdin"
 #[tokio::test]
 async fn step_with_cmd_overrides_task_cmd() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "flexible"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf default"]
 
-[tasks.stdout]
+[bria.tasks.stdout]
 mode = "capture"
 max_bytes = 64
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "flexible"
 
-[pipelines.steps.with]
+[bria.pipelines.steps.with]
 cmd = "echo"
 args = ["-n", "overridden"]
 "#;
@@ -910,35 +932,36 @@ args = ["-n", "overridden"]
 #[tokio::test]
 async fn step_with_env_merges_and_overrides_task_env() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "env-test"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf '%s %s' \"$A\" \"$B\""]
 
-[tasks.env]
+[bria.tasks.env]
 A = "task-a"
 B = "task-b"
 
-[tasks.stdout]
+[bria.tasks.stdout]
 mode = "capture"
 max_bytes = 64
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "env-test"
 
-[pipelines.steps.with.env]
+[bria.pipelines.steps.with.env]
 A = "step-a"
 "#;
     let result = run_pipeline_once(config, "p", empty_job("j", "src"))
@@ -952,27 +975,28 @@ A = "step-a"
 #[tokio::test]
 async fn step_with_success_exit_codes_overrides_task() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "exit-3"
 driver = "local"
 cmd = "sh"
 args = ["-c", "exit 3"]
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "exit-3"
 
-[pipelines.steps.with]
+[bria.pipelines.steps.with]
 success_exit_codes = [0, 3]
 "#;
     let result = run_pipeline_once(config, "p", empty_job("j", "src"))
@@ -985,23 +1009,24 @@ success_exit_codes = [0, 3]
 #[tokio::test]
 async fn custom_success_exit_codes_on_task_level_accepts_non_zero() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "exit-2"
 driver = "local"
 cmd = "sh"
 args = ["-c", "exit 2"]
 success_exit_codes = [0, 2]
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "exit-2"
@@ -1016,31 +1041,32 @@ task = "exit-2"
 #[tokio::test]
 async fn step_with_timeout_overrides_task_timeout() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "slowish"
 driver = "local"
 cmd = "sh"
 args = ["-c", "sleep 3"]
 timeout_secs = 10
 
-[global.timeout]
+[bria.global.timeout]
 step_secs = 30
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "slowish"
 
-[pipelines.steps.with]
+[bria.pipelines.steps.with]
 timeout_secs = 1
 timeout_action = "kill"
 "#;
@@ -1060,26 +1086,27 @@ timeout_action = "kill"
 #[tokio::test]
 async fn task_timeout_overrides_global_timeout() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "slowish"
 driver = "local"
 cmd = "sh"
 args = ["-c", "sleep 3"]
 timeout_secs = 1
 
-[global.timeout]
+[bria.global.timeout]
 step_secs = 30
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "slowish"
@@ -1102,30 +1129,31 @@ task = "slowish"
 #[tokio::test]
 async fn stderr_capture_mode_captures_stderr() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "warn"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf ok; printf err >&2"]
 
-[tasks.stdout]
+[bria.tasks.stdout]
 mode = "capture"
 max_bytes = 64
 
-[tasks.stderr]
+[bria.tasks.stderr]
 mode = "capture"
 max_bytes = 64
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "warn"
@@ -1141,25 +1169,26 @@ task = "warn"
 #[tokio::test]
 async fn stderr_discard_mode_does_not_capture_stderr() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "loud"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf info >&2; true"]
 
-[tasks.stderr]
+[bria.tasks.stderr]
 mode = "discard"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "loud"
@@ -1174,25 +1203,26 @@ task = "loud"
 #[tokio::test]
 async fn stdout_discard_mode_does_not_capture_stdout() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "no-out"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf secret"]
 
-[tasks.stdout]
+[bria.tasks.stdout]
 mode = "discard"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "no-out"
@@ -1209,26 +1239,27 @@ task = "no-out"
 #[tokio::test]
 async fn stdout_exceeds_max_bytes_fails_task() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "verbose"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf '%.0sx' $(seq 1 200)"]
 
-[tasks.stdout]
+[bria.tasks.stdout]
 mode = "capture"
 max_bytes = 10
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "verbose"
@@ -1249,26 +1280,27 @@ task = "verbose"
 #[tokio::test]
 async fn stderr_exceeds_max_bytes_fails_task() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "chatty"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf '%.0sx' $(seq 1 200) >&2"]
 
-[tasks.stderr]
+[bria.tasks.stderr]
 mode = "capture"
 max_bytes = 10
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "chatty"
@@ -1291,12 +1323,13 @@ task = "chatty"
 #[tokio::test]
 async fn timeout_kill_fails_task_immediately() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "slow"
 driver = "local"
 cmd = "sh"
@@ -1304,11 +1337,11 @@ args = ["-c", "sleep 5"]
 timeout_secs = 1
 timeout_action = "kill"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "slow"
@@ -1329,12 +1362,13 @@ task = "slow"
 #[tokio::test]
 async fn timeout_term_then_force_kills_after_grace_expires() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "stubborn"
 driver = "local"
 cmd = "sh"
@@ -1343,11 +1377,11 @@ timeout_secs = 1
 timeout_action = "term"
 kill_grace_secs = 1
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "stubborn"
@@ -1363,26 +1397,27 @@ task = "stubborn"
 #[tokio::test]
 async fn timeout_zero_means_unlimited() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "fast"
 driver = "local"
 cmd = "true"
 timeout_secs = 0
 
-[global.timeout]
+[bria.global.timeout]
 step_secs = 0
 action = "kill"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "fast"
@@ -1398,34 +1433,35 @@ task = "fast"
 #[tokio::test]
 async fn json_output_with_nested_key_extracts_deep_value() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "json-nested"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf '{\"data\":{\"inner\":{\"value\":42}}}'"]
 
-[tasks.stdout]
+[bria.tasks.stdout]
 mode = "capture"
 max_bytes = 256
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "gen"
 type = "process"
 task = "json-nested"
 
-[pipelines.steps.outputs]
+[bria.pipelines.steps.outputs]
 format = "json"
 
-[[pipelines.steps.outputs.fields]]
+[[bria.pipelines.steps.outputs.fields]]
 key = "data.inner.value"
 name = "inner_value"
 "#;
@@ -1442,34 +1478,35 @@ name = "inner_value"
 #[tokio::test]
 async fn json_output_missing_key_returns_null() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "json-shallow"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf '{\"a\":1}'"]
 
-[tasks.stdout]
+[bria.tasks.stdout]
 mode = "capture"
 max_bytes = 64
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "gen"
 type = "process"
 task = "json-shallow"
 
-[pipelines.steps.outputs]
+[bria.pipelines.steps.outputs]
 format = "json"
 
-[[pipelines.steps.outputs.fields]]
+[[bria.pipelines.steps.outputs.fields]]
 key = "b.c"
 name = "missing"
 "#;
@@ -1486,34 +1523,35 @@ name = "missing"
 #[tokio::test]
 async fn invalid_json_stdout_produces_empty_outputs() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "not-json"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf 'not-json'"]
 
-[tasks.stdout]
+[bria.tasks.stdout]
 mode = "capture"
 max_bytes = 64
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "gen"
 type = "process"
 task = "not-json"
 
-[pipelines.steps.outputs]
+[bria.pipelines.steps.outputs]
 format = "json"
 
-[[pipelines.steps.outputs.fields]]
+[[bria.pipelines.steps.outputs.fields]]
 key = "any"
 name = "any"
 "#;
@@ -1528,34 +1566,35 @@ name = "any"
 #[tokio::test]
 async fn text_output_format_extracts_stdout_as_string() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "txt-out"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf 'plain-text-result'"]
 
-[tasks.stdout]
+[bria.tasks.stdout]
 mode = "capture"
 max_bytes = 64
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "gen"
 type = "process"
 task = "txt-out"
 
-[pipelines.steps.outputs]
+[bria.pipelines.steps.outputs]
 format = "text"
 
-[[pipelines.steps.outputs.fields]]
+[[bria.pipelines.steps.outputs.fields]]
 name = "body"
 "#;
     let result = run_pipeline_once(config, "p", empty_job("j", "src"))
@@ -1571,34 +1610,35 @@ name = "body"
 #[tokio::test]
 async fn json_output_with_empty_key_returns_whole_document() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "json-full"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf '{\"x\":1,\"y\":2}'"]
 
-[tasks.stdout]
+[bria.tasks.stdout]
 mode = "capture"
 max_bytes = 64
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "gen"
 type = "process"
 task = "json-full"
 
-[pipelines.steps.outputs]
+[bria.pipelines.steps.outputs]
 format = "json"
 
-[[pipelines.steps.outputs.fields]]
+[[bria.pipelines.steps.outputs.fields]]
 key = ""
 name = "doc"
 "#;
@@ -1615,32 +1655,33 @@ name = "doc"
 #[tokio::test]
 async fn no_stdout_produces_empty_outputs() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "discard-all"
 driver = "local"
 cmd = "true"
 
-[tasks.stdout]
+[bria.tasks.stdout]
 mode = "discard"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "discard-all"
 
-[pipelines.steps.outputs]
+[bria.pipelines.steps.outputs]
 format = "json"
 
-[[pipelines.steps.outputs.fields]]
+[[bria.pipelines.steps.outputs.fields]]
 key = "x"
 name = "x"
 "#;
@@ -1657,21 +1698,22 @@ name = "x"
 #[tokio::test]
 async fn spawn_bad_command_fails_pipeline() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "ghost"
 driver = "local"
 cmd = "/nonexistent/path/binary_xyzzy"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "ghost"
@@ -1691,23 +1733,24 @@ task = "ghost"
 #[tokio::test]
 async fn non_zero_exit_code_not_in_success_codes_fails_task() {
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "failer"
 driver = "local"
 cmd = "sh"
 args = ["-c", "exit 42"]
 success_exit_codes = [0]
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "failer"
@@ -1734,27 +1777,28 @@ async fn inherit_env_true_passes_parent_environment() {
         std::env::set_var("BRIA_TEST_INHERIT_ENV_VAR", "inherited-value");
     }
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "check-env"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf '%s' \"$BRIA_TEST_INHERIT_ENV_VAR\""]
 inherit_env = true
 
-[tasks.stdout]
+[bria.tasks.stdout]
 mode = "capture"
 max_bytes = 64
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "check-env"
@@ -1779,27 +1823,28 @@ async fn inherit_env_false_isolates_child_environment() {
         std::env::set_var("BRIA_TEST_ISOLATED_VAR", "should-not-leak");
     }
     let config = r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "isolated"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf '%s' \"$BRIA_TEST_ISOLATED_VAR\""]
 inherit_env = false
 
-[tasks.stdout]
+[bria.tasks.stdout]
 mode = "capture"
 max_bytes = 64
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "isolated"
@@ -1825,32 +1870,33 @@ async fn step_with_working_dir_overrides_task() {
     let canonical_str = canonical.to_string_lossy().to_string();
     let config = format!(
         r#"
-[[sources]]
+[bria]
+[[bria.sources]]
 id = "src"
 type = "file"
 path = "unused.jsonl"
 
-[[tasks]]
+[[bria.tasks]]
 id = "pwd-task"
 driver = "local"
 cmd = "sh"
 args = ["-c", "printf '%s' \"$PWD\""]
 working_dir = "/"
 
-[tasks.stdout]
+[bria.tasks.stdout]
 mode = "capture"
 max_bytes = 512
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "p"
 source = "src"
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "pwd-task"
 
-[pipelines.steps.with]
+[bria.pipelines.steps.with]
 working_dir = "{0}"
 "#,
         canonical_str

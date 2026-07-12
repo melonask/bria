@@ -1,5 +1,8 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Instant;
 
 use dashmap::DashMap;
@@ -15,7 +18,7 @@ use crate::template::TemplateEngine;
 struct PipelineFailureContext<'a> {
     duration_ms: u64,
     error_msg: String,
-    pipeline_pauses: Arc<DashMap<String, Arc<tokio::sync::Notify>>>,
+    pipeline_pauses: Arc<DashMap<String, Arc<PipelinePause>>>,
     failed_step_ids: &'a [String],
 }
 
@@ -23,6 +26,48 @@ enum ConditionSignal {
     None,
     Emit,
     SkipTo(String),
+}
+
+/// Shared, durable-in-memory resume state for a stopped pipeline.
+///
+/// `Notify` alone loses a notification sent before a worker starts waiting.
+/// The atomic flag records that resume request and `Notify` wakes existing
+/// waiters, allowing either ordering of operator request and worker pause.
+pub struct PipelinePause {
+    resumed: AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl PipelinePause {
+    pub fn new() -> Self {
+        Self {
+            resumed: AtomicBool::new(false),
+            notify: tokio::sync::Notify::new(),
+        }
+    }
+
+    /// Record an operator resume request and wake all currently stopped jobs.
+    pub fn resume(&self) {
+        self.resumed.store(true, Ordering::Release);
+        self.notify.notify_waiters();
+    }
+
+    /// Block until a resume request is observed without losing an early wakeup.
+    async fn wait_for_resume(&self) {
+        loop {
+            let notified = self.notify.notified();
+            if self.resumed.swap(false, Ordering::AcqRel) {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+impl Default for PipelinePause {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 struct StepExecution {
@@ -39,7 +84,7 @@ pub async fn run_pipeline(
     config: Arc<crate::config::Config>,
     template: Arc<TemplateEngine>,
     evaluator: Arc<Evaluator>,
-    pipeline_pauses: Arc<DashMap<String, Arc<tokio::sync::Notify>>>,
+    pipeline_pauses: Arc<DashMap<String, Arc<PipelinePause>>>,
 ) -> PipelineResult {
     let pipeline_start = Instant::now();
     let mut ctx = Context::new(job.clone());
@@ -527,14 +572,14 @@ async fn handle_pipeline_failure(
     );
 
     // Get or create a notification mechanism for this pipeline.
-    let notify = failure
+    let pause = failure
         .pipeline_pauses
         .entry(pipeline.id.clone())
-        .or_insert_with(|| Arc::new(tokio::sync::Notify::new()))
+        .or_insert_with(|| Arc::new(PipelinePause::new()))
         .clone();
 
     // Wait indefinitely until an operator calls the resume endpoint.
-    notify.notified().await;
+    pause.wait_for_resume().await;
 
     tracing::info!(
         "Pipeline '{}' resumed after operator intervention for job '{}'",
@@ -682,4 +727,22 @@ fn calculate_backoff(base_ms: u64, max_ms: u64, attempt: u32, jitter: f64) -> u6
     let random_ratio = rand::random::<f64>();
     let jitter_factor = 1.0 - (bounded_jitter * random_ratio);
     (delay as f64 * jitter_factor) as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PipelinePause;
+
+    #[tokio::test]
+    async fn pipeline_pause_retains_resume_before_waiting() {
+        let pause = PipelinePause::new();
+        pause.resume();
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            pause.wait_for_resume(),
+        )
+        .await
+        .expect("an early resume request must not be lost");
+    }
 }

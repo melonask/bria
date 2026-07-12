@@ -40,6 +40,11 @@ pub async fn run(cli: Cli) -> Result<()> {
     let config = Config::load_from_path(&cli.config)?;
     config.validate()?;
 
+    if cli.is_check() {
+        println!("Configuration is valid: {}", cli.config);
+        return Ok(());
+    }
+
     let orchestrator = Orchestrator::new(config).await?;
     orchestrator.run().await
 }

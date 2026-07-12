@@ -1,55 +1,57 @@
+[bria]
+
 # http source -> file sink: verifies PG state recovery re-runs in-flight jobs after restart
 [global]
 tmp_dir = "/tmp/bria"
 
-[global.log]
+[bria.global.log]
 level = "info"
 format = "json"
 
-[global.state]
+[bria.global.state]
 backend = "pg"
 pg_url = "${BRIA_E2E_PG_URL}"
 
-[server]
+[bria.server]
 enabled = true
 bind = "0.0.0.0"
 port = 4000
 prefix = "v1"
 api_key = "${BRIA_API_KEY}"
 
-[[sources]]
+[[bria.sources]]
 id = "api"
 type = "http"
 path = "jobs"
 id_field = "id"
 max_body_bytes = 1048576
 
-[[tasks]]
+[[bria.tasks]]
 id = "recoverable"
 driver = "local"
 cmd = "sh"
 args = ["-c", "sleep 3; printf 'recovered:%s' '{{ job.payload.message }}'"]
 timeout_secs = 10
 
-[tasks.stdout]
+[bria.tasks.stdout]
 mode = "capture"
 max_bytes = 4096
 
-[tasks.stderr]
+[bria.tasks.stderr]
 mode = "capture"
 max_bytes = 4096
 
-[[sinks]]
+[[bria.sinks]]
 id = "file-out"
 type = "file"
 path = "/tmp/bria/results.jsonl"
 
-[[pipelines]]
+[[bria.pipelines]]
 id = "http-pg-recovery-pipeline"
 source = "api"
 sinks = ["file-out"]
 
-[[pipelines.steps]]
+[[bria.pipelines.steps]]
 id = "run"
 type = "process"
 task = "recoverable"

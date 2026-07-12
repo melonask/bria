@@ -28,8 +28,7 @@ pub struct Config {
 
 impl Config {
     /// Load configuration from a file path.
-    /// Parses the merged universal TOML: extracts [bria] namespace, reads
-    /// shared root sections, ignores unrelated package namespaces.
+    /// Parses the merged universal TOML with an explicit `[bria]` namespace.
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let raw = std::fs::read_to_string(path)
@@ -37,55 +36,22 @@ impl Config {
         Self::from_str_with_env(&raw)
     }
 
-    /// Parse configuration from a merged universal TOML string with ${VAR} and
-    /// ${VAR:-default} environment substitution.
-    ///
-    /// If the parsed TOML has no `[bria]` section at the root, the entire
-    /// content is treated as the `[bria]` namespace for developer/test
-    /// convenience. The published config format always uses the explicit
-    /// `[bria]` namespace.
+    /// Parse configuration from a merged universal TOML string with `${VAR}`
+    /// and `${VAR:-default}` environment substitution. `[bria]` is required.
     pub fn from_str_with_env(raw: &str) -> Result<Self> {
         let resolved = substitute_env(raw)?;
 
         // Parse into a raw Value tree first for flexibility
-        let mut val: toml::Value = toml::from_str(&resolved)
+        let val: toml::Value = toml::from_str(&resolved)
             .map_err(|e| Error::config(format!("TOML parse error: {}", e)))?;
 
-        // If there's no explicit [bria], inject everything into [bria]
         let table = val
-            .as_table_mut()
-            .ok_or_else(|| Error::config("TOML must be a table at the root".to_string()))?;
-
+            .as_table()
+            .ok_or_else(|| Error::config("TOML must be a table at the root"))?;
         if !table.contains_key("bria") {
-            // Extract known shared root sections and put the rest under [bria]
-            let known_shared: &[&str] = &[
-                "version",
-                "meta",
-                "log",
-                "runtime",
-                "http",
-                "stores",
-                "transports",
-                "paths",
-                "objects",
-                "chains",
-                "assets",
-                "ladon",
-                "pano",
-                "oracles",
-            ];
-            let mut bria_table = toml::value::Table::new();
-            let keys: Vec<String> = table.keys().cloned().collect();
-            for key in keys {
-                if !known_shared.contains(&key.as_str()) {
-                    if let Some(v) = table.remove(&key) {
-                        bria_table.insert(key, v);
-                    }
-                }
-            }
-            if !bria_table.is_empty() {
-                table.insert("bria".to_string(), toml::Value::Table(bria_table));
-            }
+            return Err(Error::config(
+                "Missing required [bria] namespace; unnested Bria configuration is not supported",
+            ));
         }
 
         let universal = UniversalConfig::deserialize(val.clone())
@@ -142,24 +108,85 @@ impl Config {
             }
         }
 
-        // Validate sources
+        // Validate individual entities while retaining all errors for `bria check`.
         for source in &self.sources {
-            source.validate()?;
+            if source.id.trim().is_empty() {
+                errors.push("Source id must not be empty".to_string());
+            }
+            if let Err(error) = source.validate() {
+                errors.push(error.to_string());
+            }
         }
 
-        // Validate sinks
         for sink in &self.sinks {
-            sink.validate()?;
+            if sink.id.trim().is_empty() {
+                errors.push("Sink id must not be empty".to_string());
+            }
+            if let Err(error) = sink.validate() {
+                errors.push(error.to_string());
+            }
         }
 
-        // Validate tasks
         for task in &self.tasks {
-            task.validate()?;
+            if task.id.trim().is_empty() {
+                errors.push("Task id must not be empty".to_string());
+            }
+            if task.cmd.trim().is_empty() {
+                errors.push(format!("Task '{}' requires a command", task.id));
+            }
+            if let Err(error) = task.validate() {
+                errors.push(error.to_string());
+            }
         }
 
-        // Validate pipelines
         for pipeline in &self.pipelines {
-            pipeline.validate(&task_ids, &sink_ids, &source_ids)?;
+            if pipeline.id.trim().is_empty() {
+                errors.push("Pipeline id must not be empty".to_string());
+            }
+            if let Err(error) = pipeline.validate(&task_ids, &sink_ids, &source_ids) {
+                errors.push(error.to_string());
+            }
+        }
+
+        if self.global.max_payload_bytes == 0 {
+            errors.push("global.max_payload_bytes must be greater than zero".to_string());
+        }
+        if self.server.enabled {
+            if self.server.prefix.trim().is_empty()
+                || self.server.prefix.trim().contains('/')
+                || self.server.prefix.trim() != self.server.prefix
+            {
+                errors.push(
+                    "server.prefix must be one non-empty path segment without surrounding whitespace"
+                        .to_string(),
+                );
+            }
+            if self.server.max_body_bytes == 0 {
+                errors.push("server.max_body_bytes must be greater than zero".to_string());
+            }
+
+            let mut paths = HashSet::new();
+            for source in &self.sources {
+                if matches!(source.r#type, SourceType::Http | SourceType::Webhook) {
+                    let path = source.path.to_string_lossy();
+                    let path = path.trim_matches('/');
+                    if path.is_empty() {
+                        continue;
+                    }
+                    if !paths.insert(path.to_string()) {
+                        errors.push(format!(
+                            "HTTP/webhook source route '{}' is configured more than once",
+                            path
+                        ));
+                    }
+                    if path == "ping" || path == "pipelines" || path.starts_with("pipelines/") {
+                        errors.push(format!(
+                            "HTTP/webhook source route '{}' conflicts with an internal control route",
+                            path
+                        ));
+                    }
+                }
+            }
         }
 
         // Validate server-dependent configs
@@ -380,17 +407,16 @@ impl Config {
 // =============================================================================
 
 /// Parsed representation of the merged universal TOML.
-/// Ignores [ladon], [pano], [oracles]; accepts only known shared root sections
+/// Ignores peer package namespaces; accepts only known shared root sections
 /// and the [bria] namespace.  Unknown fields inside [bria] are rejected by
 /// the serde(deny_unknown_fields) on BriaConfig and its children.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)] // reject unknown ROOT-level tables
 struct UniversalConfig {
-    #[serde(default)]
-    version: Option<u64>,
-    #[serde(default)]
-    meta: Option<SharedMetaConfig>,
+    #[serde(rename = "version", default)]
+    _version: Option<u64>,
+    #[serde(rename = "meta", default)]
+    _meta: Option<SharedMetaConfig>,
     #[serde(default)]
     log: Option<SharedLogConfig>,
     #[serde(default)]
@@ -403,21 +429,23 @@ struct UniversalConfig {
     transports: Option<SharedTransportsSection>,
     #[serde(default)]
     paths: HashMap<String, SharedPathConfig>,
-    #[serde(default)]
-    objects: HashMap<String, SharedObjectConfig>,
-    #[serde(default)]
-    chains: HashMap<String, SharedChainConfig>,
-    #[serde(default)]
-    assets: HashMap<String, SharedAssetConfig>,
+    #[serde(rename = "objects", default)]
+    _objects: HashMap<String, SharedObjectConfig>,
+    #[serde(rename = "chains", default)]
+    _chains: HashMap<String, SharedChainConfig>,
+    #[serde(rename = "assets", default)]
+    _assets: HashMap<String, SharedAssetConfig>,
     #[serde(default)]
     bria: BriaConfig,
     // --- explicitly ignore other package namespaces ---
-    #[serde(default, skip_serializing)]
-    ladon: Option<serde::de::IgnoredAny>,
-    #[serde(default, skip_serializing)]
-    pano: Option<serde::de::IgnoredAny>,
-    #[serde(default, skip_serializing)]
-    oracles: Option<serde::de::IgnoredAny>,
+    #[serde(rename = "artur", default, skip_serializing)]
+    _artur: Option<serde::de::IgnoredAny>,
+    #[serde(rename = "ladon", default, skip_serializing)]
+    _ladon: Option<serde::de::IgnoredAny>,
+    #[serde(rename = "pano", default, skip_serializing)]
+    _pano: Option<serde::de::IgnoredAny>,
+    #[serde(rename = "oracles", default, skip_serializing)]
+    _oracles: Option<serde::de::IgnoredAny>,
 }
 
 impl UniversalConfig {
@@ -593,7 +621,6 @@ impl UniversalConfig {
 
         // --- sinks ---
         let mut sinks: Vec<SinkConfig> = Vec::new();
-        let _sinks_len = bria.sinks.len();
         for bria_sink in &bria.sinks {
             let s = resolve_sink(bria_sink, &self.paths, &self.transports, &self.stores)?;
             sinks.push(s);
@@ -626,21 +653,19 @@ impl UniversalConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct SharedMetaConfig {
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    environment: String,
-    #[serde(default)]
-    data_dir: String,
-    #[serde(default)]
-    profile: String,
+    #[serde(rename = "name", default)]
+    _name: String,
+    #[serde(rename = "environment", default)]
+    _environment: String,
+    #[serde(rename = "data_dir", default)]
+    _data_dir: String,
+    #[serde(rename = "profile", default)]
+    _profile: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct SharedLogConfig {
     #[serde(default)]
     level: Option<String>,
@@ -652,7 +677,6 @@ struct SharedLogConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct SharedRuntimeConfig {
     #[serde(default = "default_runtime_worker_threads")]
     worker_threads: usize,
@@ -676,16 +700,15 @@ fn default_runtime_max_payload() -> usize {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct SharedHttpConfig {
-    #[serde(default)]
-    user_agent: String,
-    #[serde(default)]
-    request_timeout_secs: u64,
-    #[serde(default)]
-    max_retries: u32,
-    #[serde(default)]
-    retry_backoff_ms: u64,
+    #[serde(rename = "user_agent", default)]
+    _user_agent: String,
+    #[serde(rename = "request_timeout_secs", default)]
+    _request_timeout_secs: u64,
+    #[serde(rename = "max_retries", default)]
+    _max_retries: u32,
+    #[serde(rename = "retry_backoff_ms", default)]
+    _retry_backoff_ms: u64,
     #[serde(default)]
     bind: Option<String>,
     #[serde(default)]
@@ -696,35 +719,32 @@ struct SharedHttpConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct SharedStoreConfig {
     #[serde(default)]
     driver: Option<String>,
     #[serde(default)]
     url: String,
-    #[serde(default)]
-    migrate: bool,
-    #[serde(default)]
-    connect_timeout_secs: u64,
-    #[serde(default)]
-    max_connections: u32,
+    #[serde(rename = "migrate", default)]
+    _migrate: bool,
+    #[serde(rename = "connect_timeout_secs", default)]
+    _connect_timeout_secs: u64,
+    #[serde(rename = "max_connections", default)]
+    _max_connections: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct SharedTransportsSection {
     #[serde(default)]
     amqp: HashMap<String, SharedTransportAmqpConfig>,
     #[serde(default)]
     webhook: HashMap<String, SharedTransportWebhookConfig>,
-    #[serde(default)]
-    http: HashMap<String, SharedTransportHttpConfig>,
+    #[serde(rename = "http", default)]
+    _http: HashMap<String, SharedTransportHttpConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct SharedTransportAmqpConfig {
     #[serde(default)]
     url: String,
@@ -732,26 +752,25 @@ struct SharedTransportAmqpConfig {
     username: String,
     #[serde(default)]
     password: String,
-    #[serde(default)]
-    virtual_host: String,
+    #[serde(rename = "virtual_host", default)]
+    _virtual_host: String,
     #[serde(default)]
     reconnect_secs: u64,
     #[serde(default)]
     qos_prefetch: u16,
-    #[serde(default)]
-    tls: String,
+    #[serde(rename = "tls", default)]
+    _tls: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct SharedTransportWebhookConfig {
     #[serde(default)]
     url: String,
-    #[serde(default)]
-    method: String,
-    #[serde(default)]
-    auth_scheme: String,
+    #[serde(rename = "method", default)]
+    _method: String,
+    #[serde(rename = "auth_scheme", default)]
+    _auth_scheme: String,
     #[serde(default)]
     token: String,
     #[serde(default)]
@@ -768,82 +787,77 @@ struct SharedTransportWebhookConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct SharedTransportHttpConfig {
-    #[serde(default)]
-    base_url: String,
-    #[serde(default)]
-    user_agent: String,
-    #[serde(default)]
-    timeout_secs: u64,
-    #[serde(default)]
-    max_retries: u32,
-    #[serde(default)]
-    retry_base_ms: u64,
+    #[serde(rename = "base_url", default)]
+    _base_url: String,
+    #[serde(rename = "user_agent", default)]
+    _user_agent: String,
+    #[serde(rename = "timeout_secs", default)]
+    _timeout_secs: u64,
+    #[serde(rename = "max_retries", default)]
+    _max_retries: u32,
+    #[serde(rename = "retry_base_ms", default)]
+    _retry_base_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct SharedPathConfig {
-    #[serde(default)]
-    kind: String,
+    #[serde(rename = "kind", default)]
+    _kind: String,
     #[serde(default)]
     path: String,
-    #[serde(default)]
-    format: String,
-    #[serde(default)]
-    create_parent_dirs: bool,
+    #[serde(rename = "format", default)]
+    _format: String,
+    #[serde(rename = "create_parent_dirs", default)]
+    _create_parent_dirs: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct SharedObjectConfig {
-    #[serde(default)]
-    driver: String,
-    #[serde(default)]
-    root: String,
-    #[serde(default)]
-    public_base_url: Option<String>,
+    #[serde(rename = "driver", default)]
+    _driver: String,
+    #[serde(rename = "root", default)]
+    _root: String,
+    #[serde(rename = "public_base_url", default)]
+    _public_base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct SharedChainConfig {
-    #[serde(default)]
-    family: String,
-    #[serde(default)]
-    caip2: String,
-    #[serde(default)]
-    native_symbol: String,
-    #[serde(default)]
-    rpc_urls: Vec<String>,
-    #[serde(default)]
-    confirmations: u32,
-    #[serde(default)]
-    derivation: Option<String>,
+    #[serde(rename = "family", default)]
+    _family: String,
+    #[serde(rename = "caip2", default)]
+    _caip2: String,
+    #[serde(rename = "native_symbol", default)]
+    _native_symbol: String,
+    #[serde(rename = "rpc_urls", default)]
+    _rpc_urls: Vec<String>,
+    #[serde(rename = "confirmations", default)]
+    _confirmations: u32,
+    #[serde(rename = "derivation", default)]
+    _derivation: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct SharedAssetConfig {
-    #[serde(default)]
-    enabled: bool,
-    #[serde(default)]
-    chain: String,
-    #[serde(default)]
-    symbol: String,
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    kind: String,
-    #[serde(default)]
-    decimals: u32,
-    #[serde(default)]
-    contract: Option<String>,
+    #[serde(rename = "enabled", default)]
+    _enabled: bool,
+    #[serde(rename = "chain", default)]
+    _chain: String,
+    #[serde(rename = "symbol", default)]
+    _symbol: String,
+    #[serde(rename = "name", default)]
+    _name: String,
+    #[serde(rename = "kind", default)]
+    _kind: String,
+    #[serde(rename = "decimals", default)]
+    _decimals: u32,
+    #[serde(rename = "contract", default)]
+    _contract: Option<String>,
 }
 
 // =============================================================================
@@ -852,10 +866,9 @@ struct SharedAssetConfig {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct BriaConfig {
-    #[serde(default)]
-    enabled: Option<bool>,
+    #[serde(rename = "enabled", default)]
+    _enabled: Option<bool>,
     #[serde(default)]
     global: Option<BriaGlobalConfig>,
     #[serde(default)]
@@ -872,7 +885,6 @@ struct BriaConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct BriaGlobalConfig {
     #[serde(default)]
     worker_threads: usize,
@@ -896,7 +908,6 @@ struct BriaGlobalConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct BriaLogConfig {
     #[serde(default)]
     level: Option<String>,
@@ -908,7 +919,6 @@ struct BriaLogConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct BriaStateConfig {
     #[serde(default)]
     backend: Option<String>,
@@ -923,7 +933,6 @@ struct BriaStateConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct BriaRetryConfig {
     #[serde(default)]
     max_attempts: Option<u32>,
@@ -937,7 +946,6 @@ struct BriaRetryConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct BriaTimeoutConfig {
     #[serde(default)]
     step_secs: Option<u64>,
@@ -949,7 +957,6 @@ struct BriaTimeoutConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct BriaServerConfig {
     #[serde(default)]
     enabled: Option<bool>,
@@ -971,15 +978,14 @@ struct BriaServerConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct BriaSourceConfig {
     #[serde(default)]
     id: String,
     #[serde(rename = "type")]
     #[serde(default)]
     r#type: String,
-    #[serde(default)]
-    enabled: Option<bool>,
+    #[serde(rename = "enabled", default)]
+    _enabled: Option<bool>,
     // Path reference
     #[serde(default)]
     path_ref: Option<String>,
@@ -1044,7 +1050,6 @@ struct BriaSourceConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct BriaTableSourceConfig {
     #[serde(default)]
     name: Option<String>,
@@ -1054,7 +1059,6 @@ struct BriaTableSourceConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct BriaTableSourceColumnsConfig {
     #[serde(default)]
     id: Option<String>,
@@ -1074,7 +1078,6 @@ struct BriaTableSourceColumnsConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct BriaTaskConfig {
     #[serde(default)]
     id: String,
@@ -1116,7 +1119,6 @@ struct BriaTaskConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct BriaTaskRetryConfig {
     #[serde(default)]
     max_attempts: Option<u32>,
@@ -1130,15 +1132,14 @@ struct BriaTaskRetryConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct BriaSinkConfig {
     #[serde(default)]
     id: String,
     #[serde(rename = "type")]
     #[serde(default)]
     r#type: String,
-    #[serde(default)]
-    enabled: Option<bool>,
+    #[serde(rename = "enabled", default)]
+    _enabled: Option<bool>,
     // File
     #[serde(default)]
     path: Option<String>,
@@ -1163,8 +1164,8 @@ struct BriaSinkConfig {
     retry_base_ms: Option<u64>,
     #[serde(default)]
     timeout_secs: Option<u64>,
-    #[serde(default)]
-    headers: Option<HashMap<String, String>>,
+    #[serde(rename = "headers", default)]
+    _headers: Option<HashMap<String, String>>,
     // Queue
     #[serde(default)]
     username: Option<String>,
@@ -1202,7 +1203,6 @@ struct BriaSinkConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct BriaDbTableConfig {
     #[serde(default)]
     columns: Option<TableSinkColumnsConfig>,
@@ -1210,7 +1210,6 @@ struct BriaDbTableConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct BriaTableSinkConfig {
     #[serde(default)]
     name: Option<String>,
@@ -1220,7 +1219,6 @@ struct BriaTableSinkConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct BriaPipelineConfig {
     #[serde(default)]
     id: String,
@@ -2265,14 +2263,14 @@ impl TaskConfig {
 
         if self.driver == "docker" && self.docker.is_none() {
             return Err(Error::validation(format!(
-                "Task '{}' driver is 'docker' but [tasks.docker] section is missing",
+                "Task '{}' driver is 'docker' but [bria.tasks.docker] section is missing",
                 self.id
             )));
         }
 
         if self.driver == "wasm" && self.wasm.is_none() {
             return Err(Error::validation(format!(
-                "Task '{}' driver is 'wasm' but [tasks.wasm] section is missing",
+                "Task '{}' driver is 'wasm' but [bria.tasks.wasm] section is missing",
                 self.id
             )));
         }
@@ -2768,7 +2766,7 @@ impl PipelineConfig {
 
         if self.sources.len() > 1 && self.merge.is_none() {
             errors.push(format!(
-                "Pipeline '{}' has multiple sources but no [pipelines.merge] section",
+                "Pipeline '{}' has multiple sources but no [bria.pipelines.merge] section",
                 self.id
             ));
         }
@@ -2854,7 +2852,7 @@ impl PipelineConfig {
                 StepType::Map => {
                     if step.set.is_empty() {
                         errors.push(format!(
-                            "Pipeline '{}' step '{}' type 'map' requires at least one [[pipelines.steps.set]] entry",
+                            "Pipeline '{}' step '{}' type 'map' requires at least one [[bria.pipelines.steps.set]] entry",
                             self.id, step.id
                         ));
                     }
