@@ -150,7 +150,9 @@ fn build_router(state: AppState, server_cfg: &config::ServerConfig) -> Router {
     // Add explicit HTTP/webhook source routes. Axum rejects overlapping catch-all routes,
     // so each configured source path gets concrete submit and cancel endpoints.
     for source in &state.config.sources {
-        if source.r#type == config::SourceType::Http || source.r#type == config::SourceType::Webhook
+        if source.enabled
+            && (source.r#type == config::SourceType::Http
+                || source.r#type == config::SourceType::Webhook)
         {
             let source_path = source.path.to_string_lossy();
             let source_path = source_path.trim_matches('/');
@@ -170,7 +172,7 @@ fn build_router(state: AppState, server_cfg: &config::ServerConfig) -> Router {
 
     // Add stream routes if any stream sinks are configured
     for sink in &state.config.sinks {
-        if sink.r#type == config::SinkType::Stream && !sink.sse.is_empty() {
+        if sink.enabled && sink.r#type == config::SinkType::Stream && !sink.sse.is_empty() {
             router = router.route(&format!("/{prefix}/{}", sink.sse), get(sse_handler));
         }
     }
@@ -178,11 +180,10 @@ fn build_router(state: AppState, server_cfg: &config::ServerConfig) -> Router {
     // Add WebSocket route at /{prefix}/{ws_path} — matches any stream sink's websocket path
     // The handler looks up the sink by path to get ws_heartbeat_secs.
     {
-        let has_ws = state
-            .config
-            .sinks
-            .iter()
-            .any(|s| s.r#type == config::SinkType::Stream && !s.websocket.is_empty());
+        let has_ws =
+            state.config.sinks.iter().any(|s| {
+                s.enabled && s.r#type == config::SinkType::Stream && !s.websocket.is_empty()
+            });
         if has_ws {
             router = router.route(&format!("/{prefix}/{{ws_path}}"), get(ws_handler));
         }

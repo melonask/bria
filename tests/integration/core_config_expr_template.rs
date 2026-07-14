@@ -44,6 +44,14 @@ fn substitute_env_errors_when_any_token_is_unset() {
 }
 
 #[test]
+fn substitute_env_ignores_tokens_in_toml_comments() {
+    unsafe { std::env::remove_var("BRIA_TEST_COMMENT_ONLY") };
+    let input = "# ${BRIA_TEST_COMMENT_ONLY}\nvalue = \"# not a comment\"\n";
+    let output = config::substitute_env(input).expect("comments must not require environment");
+    assert_eq!(output, input);
+}
+
+#[test]
 fn substitute_env_handles_variable_names_with_digits_and_underscores() {
     unsafe { std::env::set_var("BRIA_TEST_VAR_2", "bingo") };
     let output = config::substitute_env("value=${BRIA_TEST_VAR_2}").expect("should succeed");

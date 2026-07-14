@@ -68,14 +68,14 @@ impl Orchestrator {
         let mut source_txs: HashMap<String, mpsc::UnboundedSender<Job>> = HashMap::new();
         let mut source_rxs: HashMap<String, mpsc::UnboundedReceiver<Job>> = HashMap::new();
 
-        for source in &self.config.sources {
+        for source in self.config.sources.iter().filter(|source| source.enabled) {
             let (tx, rx) = mpsc::unbounded_channel();
             source_txs.insert(source.id.clone(), tx);
             source_rxs.insert(source.id.clone(), rx);
         }
 
         // Start source producers
-        for source in &self.config.sources {
+        for source in self.config.sources.iter().filter(|source| source.enabled) {
             let tx = source_txs.get(&source.id).cloned().unwrap();
             match source.r#type {
                 crate::config::SourceType::File => {
@@ -167,7 +167,7 @@ impl Orchestrator {
             .config
             .sinks
             .iter()
-            .filter(|s| s.r#type == crate::config::SinkType::Stream)
+            .filter(|s| s.enabled && s.r#type == crate::config::SinkType::Stream)
             .map(|s| {
                 s.broadcast_capacity
                     .max(crate::config::default_broadcast_capacity())

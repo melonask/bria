@@ -668,6 +668,37 @@ source = "src"
     let _ = std::fs::remove_file(tmp);
 }
 
+#[test]
+fn checked_in_example_loads_and_validates() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Config.example.toml");
+    let config = Config::load_from_path(path).expect("checked-in example should load");
+    config
+        .validate()
+        .expect("checked-in example should validate");
+}
+
+#[test]
+fn disabled_components_do_not_require_transport_or_server_configuration() {
+    let raw = r#"
+[bria]
+
+[[bria.sources]]
+id = "disabled-http"
+type = "http"
+enabled = false
+
+[[bria.sinks]]
+id = "disabled-webhook"
+type = "webhook"
+enabled = false
+transport = "not-configured"
+"#;
+    let config = Config::from_str_with_env(raw).expect("disabled components should load");
+    config
+        .validate()
+        .expect("disabled components should not require active configuration");
+}
+
 // =============================================================================
 // Shared root sections inherited by bria
 // =============================================================================

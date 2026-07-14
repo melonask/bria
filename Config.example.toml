@@ -74,15 +74,6 @@ url = "amqp://localhost:5672"
 reconnect_secs = 5
 qos_prefetch = 100
 
-# ─── Shared root: webhook transport profile ──────────────────────────────────
-[transports.webhook.ops]
-url = "${OPS_WEBHOOK_URL:-}"
-method = "POST"
-auth_scheme = "bearer"
-token = "${OPS_WEBHOOK_TOKEN:-}"
-timeout_secs = 10
-max_retries = 3
-
 # ══════════════════════════════════════════════════════════════════════════════
 # BRI A NAMESPACE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -142,6 +133,7 @@ env = "local"
 [[bria.sources]]
 id = "image-http"
 type = "http"
+enabled = false            # enable with [bria.server].enabled = true
 path = "jobs/images"
 poll_interval_secs = 2
 max_body_bytes = 1048576
@@ -199,7 +191,6 @@ template = ""
 id = "results-webhook"
 type = "webhook"
 enabled = false              # requires --features webhook
-transport = "ops"            # resolves [transports.webhook.ops]
 template = ""
 
 [[bria.sinks]]

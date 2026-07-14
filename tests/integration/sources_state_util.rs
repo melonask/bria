@@ -23,6 +23,7 @@ use std::collections::HashMap;
 fn file_source_config(id: &str, path: &str) -> config::SourceConfig {
     config::SourceConfig {
         id: id.to_string(),
+        enabled: true,
         r#type: config::SourceType::File,
         path: std::path::PathBuf::from(path),
         poll_interval_secs: 2,

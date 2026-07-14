@@ -113,8 +113,10 @@ impl Config {
             if source.id.trim().is_empty() {
                 errors.push("Source id must not be empty".to_string());
             }
-            if let Err(error) = source.validate() {
-                errors.push(error.to_string());
+            if source.enabled {
+                if let Err(error) = source.validate() {
+                    errors.push(error.to_string());
+                }
             }
         }
 
@@ -122,8 +124,10 @@ impl Config {
             if sink.id.trim().is_empty() {
                 errors.push("Sink id must not be empty".to_string());
             }
-            if let Err(error) = sink.validate() {
-                errors.push(error.to_string());
+            if sink.enabled {
+                if let Err(error) = sink.validate() {
+                    errors.push(error.to_string());
+                }
             }
         }
 
@@ -167,7 +171,8 @@ impl Config {
 
             let mut paths = HashSet::new();
             for source in &self.sources {
-                if matches!(source.r#type, SourceType::Http | SourceType::Webhook) {
+                if source.enabled && matches!(source.r#type, SourceType::Http | SourceType::Webhook)
+                {
                     let path = source.path.to_string_lossy();
                     let path = path.trim_matches('/');
                     if path.is_empty() {
@@ -193,7 +198,7 @@ impl Config {
         if !self.server.enabled {
             for source in &self.sources {
                 match source.r#type {
-                    SourceType::Http | SourceType::Webhook => {
+                    SourceType::Http | SourceType::Webhook if source.enabled => {
                         errors.push(format!(
                             "Source '{}' type '{}' requires server.enabled = true",
                             source.id,
@@ -204,7 +209,7 @@ impl Config {
                 }
             }
             for sink in &self.sinks {
-                if sink.r#type == SinkType::Stream {
+                if sink.enabled && sink.r#type == SinkType::Stream {
                     errors.push(format!(
                         "Sink '{}' type 'stream' requires server.enabled = true",
                         sink.id
@@ -216,7 +221,7 @@ impl Config {
         // Validate feature availability
         #[cfg(not(feature = "cron"))]
         for source in &self.sources {
-            if source.r#type == SourceType::Cron {
+            if source.enabled && source.r#type == SourceType::Cron {
                 errors.push(format!(
                     "Source '{}' type 'cron' requires the 'cron' feature",
                     source.id
@@ -226,7 +231,7 @@ impl Config {
         #[cfg(not(feature = "amqp"))]
         {
             for source in &self.sources {
-                if source.r#type == SourceType::Queue {
+                if source.enabled && source.r#type == SourceType::Queue {
                     errors.push(format!(
                         "Source '{}' type 'queue' requires the 'amqp' feature",
                         source.id
@@ -234,7 +239,7 @@ impl Config {
                 }
             }
             for sink in &self.sinks {
-                if sink.r#type == SinkType::Queue {
+                if sink.enabled && sink.r#type == SinkType::Queue {
                     errors.push(format!(
                         "Sink '{}' type 'queue' requires the 'amqp' feature",
                         sink.id
@@ -245,7 +250,7 @@ impl Config {
         #[cfg(not(feature = "sqlite"))]
         {
             for source in &self.sources {
-                if source.r#type == SourceType::Sqlite {
+                if source.enabled && source.r#type == SourceType::Sqlite {
                     errors.push(format!(
                         "Source '{}' type 'sqlite' requires the 'sqlite' feature",
                         source.id
@@ -253,7 +258,7 @@ impl Config {
                 }
             }
             for sink in &self.sinks {
-                if sink.r#type == SinkType::Sqlite {
+                if sink.enabled && sink.r#type == SinkType::Sqlite {
                     errors.push(format!(
                         "Sink '{}' type 'sqlite' requires the 'sqlite' feature",
                         sink.id
@@ -267,7 +272,7 @@ impl Config {
         #[cfg(not(feature = "postgres"))]
         {
             for source in &self.sources {
-                if source.r#type == SourceType::Pg {
+                if source.enabled && source.r#type == SourceType::Pg {
                     errors.push(format!(
                         "Source '{}' type 'pg' requires the 'postgres' feature",
                         source.id
@@ -275,7 +280,7 @@ impl Config {
                 }
             }
             for sink in &self.sinks {
-                if sink.r#type == SinkType::Pg {
+                if sink.enabled && sink.r#type == SinkType::Pg {
                     errors.push(format!(
                         "Sink '{}' type 'pg' requires the 'postgres' feature",
                         sink.id
@@ -288,7 +293,7 @@ impl Config {
         }
         #[cfg(not(feature = "webhook"))]
         for sink in &self.sinks {
-            if sink.r#type == SinkType::Webhook {
+            if sink.enabled && sink.r#type == SinkType::Webhook {
                 errors.push(format!(
                     "Sink '{}' type 'webhook' requires the 'webhook' feature",
                     sink.id
@@ -1286,6 +1291,7 @@ fn resolve_source(
         }
     };
     s.r#type = src_type.clone();
+    s.enabled = bria._enabled.unwrap_or(true);
     if let Some(ref direct_url) = bria.url {
         if !direct_url.is_empty() {
             s.url = direct_url.clone();
@@ -1293,9 +1299,11 @@ fn resolve_source(
     }
 
     // Path resolution: local path > path_ref > default
-    if !bria.path.is_empty() {
+    if s.enabled && !bria.path.is_empty() {
         s.path = PathBuf::from(&bria.path);
-    } else if let Some(ref path_ref) = bria.path_ref {
+    } else if s.enabled
+        && let Some(ref path_ref) = bria.path_ref
+    {
         if !path_ref.is_empty() {
             if let Some(path_cfg) = paths.get(path_ref) {
                 s.path = PathBuf::from(&path_cfg.path);
@@ -1309,7 +1317,7 @@ fn resolve_source(
     }
 
     // AMQP transport resolution for queue sources
-    if src_type == SourceType::Queue {
+    if s.enabled && src_type == SourceType::Queue {
         if let Some(ref transport_id) = bria.transport {
             if let Some(ts) = transports {
                 if let Some(amqp_cfg) = ts.amqp.get(transport_id) {
@@ -1340,7 +1348,7 @@ fn resolve_source(
     }
 
     // Store resolution for pg/sqlite sources
-    if src_type == SourceType::Pg || src_type == SourceType::Sqlite {
+    if s.enabled && (src_type == SourceType::Pg || src_type == SourceType::Sqlite) {
         if let Some(ref store_id) = bria.store {
             if let Some(store_cfg) = stores.get(store_id) {
                 if src_type == SourceType::Pg {
@@ -1493,6 +1501,7 @@ fn resolve_sink(
         }
     };
     s.r#type = sink_type.clone();
+    s.enabled = bria._enabled.unwrap_or(true);
     if let Some(ref direct_url) = bria.url {
         if !direct_url.is_empty() {
             s.url = direct_url.clone();
@@ -1500,12 +1509,14 @@ fn resolve_sink(
     }
 
     // Path resolution
-    if let Some(ref direct_path) = bria.path {
+    if s.enabled
+        && let Some(ref direct_path) = bria.path
+    {
         if !direct_path.is_empty() {
             s.path = direct_path.clone();
         }
     }
-    if s.path.is_empty() {
+    if s.enabled && s.path.is_empty() {
         if let Some(ref path_ref) = bria.path_ref {
             if !path_ref.is_empty() {
                 if let Some(path_cfg) = paths.get(path_ref) {
@@ -1521,7 +1532,7 @@ fn resolve_sink(
     }
 
     // Transport resolution for webhook sinks
-    if sink_type == SinkType::Webhook {
+    if s.enabled && sink_type == SinkType::Webhook {
         if let Some(ref transport_id) = bria.transport {
             if let Some(ts) = transports {
                 if let Some(wh_cfg) = ts.webhook.get(transport_id) {
@@ -1553,7 +1564,7 @@ fn resolve_sink(
     }
 
     // Transport resolution for queue sinks
-    if sink_type == SinkType::Queue {
+    if s.enabled && sink_type == SinkType::Queue {
         if let Some(ref transport_id) = bria.transport {
             if let Some(ts) = transports {
                 if let Some(amqp_cfg) = ts.amqp.get(transport_id) {
@@ -1573,7 +1584,7 @@ fn resolve_sink(
     }
 
     // Store resolution for pg/sqlite sinks
-    if sink_type == SinkType::Pg || sink_type == SinkType::Sqlite {
+    if s.enabled && (sink_type == SinkType::Pg || sink_type == SinkType::Sqlite) {
         if let Some(ref store_id) = bria.store {
             if let Some(store_cfg) = stores.get(store_id) {
                 if sink_type == SinkType::Pg {
@@ -1900,6 +1911,8 @@ fn default_server_shutdown_timeout() -> u64 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceConfig {
     pub id: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     #[serde(rename = "type")]
     pub r#type: SourceType,
     #[serde(default)]
@@ -1954,6 +1967,7 @@ impl SourceConfig {
     pub(crate) fn default_with_id(id: &str) -> Self {
         Self {
             id: id.to_string(),
+            enabled: true,
             r#type: SourceType::File,
             path: PathBuf::new(),
             poll_interval_secs: default_poll_interval(),
@@ -2416,6 +2430,8 @@ fn default_max_memory_pages() -> u32 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SinkConfig {
     pub id: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     #[serde(rename = "type")]
     pub r#type: SinkType,
     #[serde(default)]
@@ -2468,6 +2484,7 @@ impl SinkConfig {
     pub(crate) fn default_with_id(id: &str) -> Self {
         Self {
             id: id.to_string(),
+            enabled: true,
             r#type: SinkType::File,
             path: String::new(),
             template: None,
@@ -3166,7 +3183,7 @@ pub struct MapSetEntry {
 // =============================================================================
 
 /// Substitute `${VAR_NAME}` and `${VAR_NAME:-default}` patterns with OS env
-/// values. Unset variables without defaults cause an error.
+/// values in TOML content. TOML comments are left unchanged.
 pub fn substitute_env(input: &str) -> Result<String> {
     // Two patterns:
     // 1. ${VAR_NAME:-default}  — use default if var unset
@@ -3179,36 +3196,68 @@ pub fn substitute_env(input: &str) -> Result<String> {
     let re =
         ENV_VAR_RE.get_or_init(|| regex::Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}").unwrap());
 
-    let mut errors: Vec<String> = Vec::new();
+    let mut errors = Vec::new();
+    let mut result = String::with_capacity(input.len());
+    let mut basic_string = false;
+    let mut literal_string = false;
+    let mut escaped = false;
 
-    // First pass: handle ${VAR:-default}
-    let with_defaults = re_default.replace_all(input, |caps: &regex::Captures| {
-        let var_name = caps.get(1).unwrap().as_str();
-        let default = caps.get(2).unwrap().as_str();
-        match std::env::var(var_name) {
-            Ok(val) => val,
-            Err(_) => default.to_string(),
-        }
-    });
-
-    // Second pass: handle plain ${VAR}
-    let result = re.replace_all(&with_defaults, |caps: &regex::Captures| {
-        let var_name = caps.get(1).unwrap().as_str();
-        match std::env::var(var_name) {
-            Ok(val) => val,
-            Err(_) => {
+    for line in input.split_inclusive('\n') {
+        let comment_start =
+            toml_comment_start(line, &mut basic_string, &mut literal_string, &mut escaped);
+        let code = &line[..comment_start];
+        let with_defaults = re_default.replace_all(code, |caps: &regex::Captures| {
+            let var_name = caps.get(1).unwrap().as_str();
+            let default = caps.get(2).unwrap().as_str();
+            std::env::var(var_name).unwrap_or_else(|_| default.to_string())
+        });
+        result.push_str(&re.replace_all(&with_defaults, |caps: &regex::Captures| {
+            let var_name = caps.get(1).unwrap().as_str();
+            std::env::var(var_name).unwrap_or_else(|_| {
                 errors.push(format!(
                     "Environment variable '{}' is not set but referenced in config",
                     var_name
                 ));
                 String::new()
-            }
-        }
-    });
+            })
+        }));
+        result.push_str(&line[comment_start..]);
+    }
 
     if !errors.is_empty() {
         return Err(Error::EnvVar(errors.join("\n")));
     }
 
-    Ok(result.to_string())
+    Ok(result)
+}
+
+/// Finds a line comment while preserving quote state for multiline strings.
+fn toml_comment_start(
+    line: &str,
+    basic_string: &mut bool,
+    literal_string: &mut bool,
+    escaped: &mut bool,
+) -> usize {
+    for (index, character) in line.char_indices() {
+        if *basic_string {
+            if *escaped {
+                *escaped = false;
+            } else if character == '\\' {
+                *escaped = true;
+            } else if character == '"' {
+                *basic_string = false;
+            }
+        } else if *literal_string {
+            if character == '\'' {
+                *literal_string = false;
+            }
+        } else if character == '#' {
+            return index;
+        } else if character == '"' {
+            *basic_string = true;
+        } else if character == '\'' {
+            *literal_string = true;
+        }
+    }
+    line.len()
 }

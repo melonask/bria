@@ -198,6 +198,9 @@ impl SinkDispatcher {
         result: &PipelineResult,
         ctx: &Context,
     ) -> Result<()> {
+        if !sink.enabled {
+            return Ok(());
+        }
         match sink.r#type {
             config::SinkType::File => self.send_to_file(sink, result, ctx).await,
             #[cfg(feature = "webhook")]
