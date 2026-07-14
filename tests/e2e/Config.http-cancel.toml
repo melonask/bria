@@ -1,7 +1,9 @@
+version = 1
+
 [bria]
 
 # http source -> file sink: cancellation test (PG state, concurrency=1)
-[global]
+[runtime]
 tmp_dir = "/tmp/bria"
 
 [bria.global.log]

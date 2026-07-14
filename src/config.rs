@@ -48,6 +48,19 @@ impl Config {
         let table = val
             .as_table()
             .ok_or_else(|| Error::config("TOML must be a table at the root"))?;
+        match table.get("version").and_then(toml::Value::as_integer) {
+            Some(1) => {}
+            Some(version) => {
+                return Err(Error::config(format!(
+                    "Unsupported configuration version {version}; only version = 1 is supported"
+                )));
+            }
+            None => {
+                return Err(Error::config(
+                    "Missing required configuration version; set version = 1 at the root",
+                ));
+            }
+        }
         if !table.contains_key("bria") {
             return Err(Error::config(
                 "Missing required [bria] namespace; unnested Bria configuration is not supported",
@@ -1244,7 +1257,7 @@ struct BriaPipelineConfig {
     #[serde(default)]
     labels: Option<HashMap<String, String>>,
     #[serde(default)]
-    steps: Vec<StepConfig>,
+    steps: Vec<BriaStepConfig>,
 }
 
 // =============================================================================
@@ -1658,7 +1671,19 @@ fn resolve_pipeline(bria: &BriaPipelineConfig) -> Result<PipelineConfig> {
         sinks: bria.sinks.clone().unwrap_or_default(),
         failure: bria.failure.clone().unwrap_or_default(),
         labels: bria.labels.clone().unwrap_or_default(),
-        steps: bria.steps.clone(),
+        steps: bria
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(index, step)| {
+                step.resolve(
+                    index,
+                    index
+                        .checked_sub(1)
+                        .and_then(|previous| bria.steps.get(previous)),
+                )
+            })
+            .collect(),
         resolved_sources: OnceLock::new(),
     };
     Ok(p)
@@ -2925,16 +2950,8 @@ impl PipelineConfig {
     fn validate_dag(&self, step_ids: &HashSet<&str>) -> std::result::Result<(), String> {
         let mut deps: HashMap<&str, Vec<&str>> = HashMap::new();
 
-        for (_i, step) in self.steps.iter().enumerate() {
-            let step_deps: Vec<&str> = if step.depends_on.is_empty() {
-                if _i > 0 {
-                    vec![self.steps[_i - 1].id.as_str()]
-                } else {
-                    vec![]
-                }
-            } else {
-                step.depends_on.iter().map(|s| s.as_str()).collect()
-            };
+        for step in &self.steps {
+            let step_deps: Vec<&str> = step.depends_on.iter().map(|s| s.as_str()).collect();
             deps.insert(step.id.as_str(), step_deps);
         }
 
@@ -3079,6 +3096,70 @@ pub struct StepConfig {
     pub reason: Option<String>,
     #[serde(default)]
     pub set: Vec<MapSetEntry>,
+}
+
+/// Raw TOML representation retaining whether `depends_on` was omitted.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BriaStepConfig {
+    #[serde(default)]
+    id: String,
+    #[serde(rename = "type", default = "default_step_type")]
+    r#type: StepType,
+    #[serde(default)]
+    task: Option<String>,
+    #[serde(default)]
+    depends_on: Option<Vec<String>>,
+    #[serde(default)]
+    with: Option<StepWithConfig>,
+    #[serde(default)]
+    outputs: Option<StepOutputsConfig>,
+    #[serde(default)]
+    retry: StepRetryConfig,
+    #[serde(default)]
+    failure: FailureConfig,
+    #[serde(default)]
+    sinks: Vec<String>,
+    #[serde(default)]
+    routing: Vec<StepRoutingConfig>,
+    #[serde(default)]
+    expr: Option<String>,
+    #[serde(default)]
+    action: Option<String>,
+    #[serde(default)]
+    skip_to: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    set: Vec<MapSetEntry>,
+}
+
+impl BriaStepConfig {
+    fn resolve(&self, index: usize, previous: Option<&BriaStepConfig>) -> StepConfig {
+        StepConfig {
+            id: self.id.clone(),
+            r#type: self.r#type.clone(),
+            task: self.task.clone(),
+            depends_on: self.depends_on.clone().unwrap_or_else(|| {
+                if index == 0 {
+                    Vec::new()
+                } else {
+                    previous.into_iter().map(|s| s.id.clone()).collect()
+                }
+            }),
+            with: self.with.clone(),
+            outputs: self.outputs.clone(),
+            retry: self.retry.clone(),
+            failure: self.failure.clone(),
+            sinks: self.sinks.clone(),
+            routing: self.routing.clone(),
+            expr: self.expr.clone(),
+            action: self.action.clone(),
+            skip_to: self.skip_to.clone(),
+            reason: self.reason.clone(),
+            set: self.set.clone(),
+        }
+    }
 }
 
 fn default_step_type() -> StepType {
@@ -3260,4 +3341,60 @@ fn toml_comment_start(
         }
     }
     line.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    #[test]
+    fn version_is_required_and_only_version_one_is_supported() {
+        let missing = Config::from_str_with_env("[bria]");
+        assert!(missing.unwrap_err().to_string().contains("version"));
+
+        let unsupported = Config::from_str_with_env("version = 2\n[bria]");
+        assert!(unsupported.unwrap_err().to_string().contains("Unsupported"));
+
+        Config::from_str_with_env("version = 1\n[bria]").expect("version one must be accepted");
+    }
+
+    #[test]
+    fn omitted_and_explicit_empty_dependencies_resolve_differently() {
+        let config = Config::from_str_with_env(
+            r#"
+version = 1
+[bria]
+[[bria.sources]]
+id = "source"
+type = "file"
+path = "jobs.jsonl"
+[[bria.pipelines]]
+id = "pipeline"
+source = "source"
+[[bria.pipelines.steps]]
+id = "first"
+type = "map"
+[[bria.pipelines.steps.set]]
+target = "job.payload.first"
+expr = "true"
+[[bria.pipelines.steps]]
+id = "sequential"
+type = "map"
+[[bria.pipelines.steps.set]]
+target = "job.payload.sequential"
+expr = "true"
+[[bria.pipelines.steps]]
+id = "independent"
+type = "map"
+depends_on = []
+[[bria.pipelines.steps.set]]
+target = "job.payload.independent"
+expr = "true"
+"#,
+        )
+        .expect("config must parse");
+
+        assert_eq!(config.pipelines[0].steps[1].depends_on, ["first"]);
+        assert!(config.pipelines[0].steps[2].depends_on.is_empty());
+    }
 }

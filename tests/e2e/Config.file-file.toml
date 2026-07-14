@@ -1,7 +1,9 @@
+version = 1
+
 [bria]
 
 # file source -> file sink (memory state, no external deps beyond bria)
-[global]
+[runtime]
 tmp_dir = "/tmp/bria"
 
 [bria.global.log]

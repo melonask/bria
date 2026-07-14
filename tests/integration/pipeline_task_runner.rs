@@ -1,4 +1,4 @@
-use bria::{Job, run_pipeline_once};
+use bria::{Job, run_pipeline_once as bria_run_pipeline_once};
 use std::collections::HashMap;
 
 // ---------- helpers ----------
@@ -23,11 +23,25 @@ fn job_with_payload(id: &str, source: &str, payload: serde_json::Value) -> Job {
     }
 }
 
+async fn run_pipeline_once(
+    config: &str,
+    pipeline_id: &str,
+    job: Job,
+) -> bria::Result<bria::PipelineResult> {
+    let config = if config.trim_start().starts_with("version =") {
+        config.to_string()
+    } else {
+        format!("version = 1\n{config}")
+    };
+    bria_run_pipeline_once(&config, pipeline_id, job).await
+}
+
 // ---------- process step: success / failure / retry ----------
 
 #[tokio::test]
 async fn single_process_step_succeeds() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -59,6 +73,7 @@ task = "ok"
 #[tokio::test]
 async fn retry_exhaustion_results_in_pipeline_failure() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -124,6 +139,7 @@ async fn retry_succeeds_on_second_attempt() {
     let marker_str = marker.to_string_lossy().to_string();
     let config_str = format!(
         r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -175,6 +191,7 @@ jitter = 0.0
 #[tokio::test]
 async fn parallel_step_failure_fails_pipeline_but_preserves_sibling_result() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -240,6 +257,7 @@ depends_on = ["root"]
 #[tokio::test]
 async fn condition_true_continues_pipeline() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -288,6 +306,7 @@ name = "ran"
 #[tokio::test]
 async fn condition_false_with_fail_action_fails_pipeline() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -329,6 +348,7 @@ task = "never-run"
 #[tokio::test]
 async fn condition_fail_without_reason_produces_default_message() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -357,6 +377,7 @@ action = "fail"
 async fn condition_skip_to_non_forward_target_advances_one_level() {
     // skip_to target is in the current level (or past) — proceeds to next level normally
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -411,6 +432,7 @@ name = "reached"
 #[tokio::test]
 async fn condition_skip_to_missing_target_fails_at_validation() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -441,6 +463,7 @@ skip_to = "nonexistent"
 #[tokio::test]
 async fn condition_unknown_action_fails_at_validation() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -470,6 +493,7 @@ action = "invalid_action"
 #[tokio::test]
 async fn condition_cel_parse_error_fails_pipeline() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -501,6 +525,7 @@ action = "fail"
 #[tokio::test]
 async fn condition_evaluates_against_payload_fields() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -536,6 +561,7 @@ task = "work"
 #[tokio::test]
 async fn condition_steps_can_reference_previous_step_results() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -584,6 +610,7 @@ task = "second"
 #[tokio::test]
 async fn map_multiple_set_entries_apply_in_sequence() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -631,6 +658,7 @@ task = "print"
 #[tokio::test]
 async fn map_single_segment_target_fails_pipeline() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -665,6 +693,7 @@ expr = "42"
 #[tokio::test]
 async fn map_unknown_namespace_target_fails_pipeline() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -694,6 +723,7 @@ expr = "'value'"
 #[tokio::test]
 async fn map_non_object_payload_fails_pipeline() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -727,6 +757,7 @@ expr = "'value'"
 #[tokio::test]
 async fn map_eval_error_fails_pipeline() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -760,6 +791,7 @@ expr = "1/0"
 #[tokio::test]
 async fn map_deep_nested_target_creates_intermediate_objects() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -808,6 +840,7 @@ task = "read-deep"
 #[tokio::test]
 async fn stdin_payload_mode_writes_job_payload_to_process() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -853,6 +886,7 @@ name = "msg"
 #[tokio::test]
 async fn stdin_none_mode_closes_stdin_immediately() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -893,6 +927,7 @@ task = "no-stdin"
 #[tokio::test]
 async fn step_with_cmd_overrides_task_cmd() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -932,6 +967,7 @@ args = ["-n", "overridden"]
 #[tokio::test]
 async fn step_with_env_merges_and_overrides_task_env() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"

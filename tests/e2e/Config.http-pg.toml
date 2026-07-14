@@ -1,6 +1,8 @@
+version = 1
+
 [bria]
 
-[global]
+[runtime]
 tmp_dir = "/tmp/bria"
 
 [bria.global.log]

@@ -1,7 +1,9 @@
+version = 1
+
 [bria]
 
 # cron source -> file sink (memory state)
-[global]
+[runtime]
 tmp_dir = "/tmp/bria"
 
 [bria.global.log]

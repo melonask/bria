@@ -1,6 +1,22 @@
 /// Tests for the universal namespaced config model.
 /// These tests use the explicit `[bria]` namespace format.
-use bria::Config;
+use bria::Config as BriaConfig;
+
+struct Config;
+
+impl Config {
+    fn from_str_with_env(raw: &str) -> bria::Result<BriaConfig> {
+        // Some fixtures begin with a shared table and historically placed the
+        // schema declaration at their first Bria table. Normalize it to the
+        // required root location while retaining the fixture's actual subject.
+        let raw = format!("version = 1\n{}", raw.replace("version = 1\n", ""));
+        BriaConfig::from_str_with_env(&raw)
+    }
+
+    fn load_from_path(path: impl AsRef<std::path::Path>) -> bria::Result<BriaConfig> {
+        BriaConfig::load_from_path(path)
+    }
+}
 
 // =============================================================================
 // Merged config loading with other namespaces
@@ -185,6 +201,7 @@ enabled = true
 [oracles.table]
 name = "rates"
 
+version = 1
 [bria]
 enabled = true
 
@@ -217,6 +234,7 @@ source = "src"
 #[test]
 fn rejects_unknown_field_in_bria_section() {
     let raw = r#"
+version = 1
 [bria]
 enabled = true
 unknown_field = "should fail"
@@ -234,6 +252,7 @@ path = "data.jsonl"
 #[test]
 fn rejects_unknown_field_in_bria_source() {
     let raw = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -249,6 +268,7 @@ bad_field = "nope"
 #[test]
 fn rejects_unknown_field_in_bria_task() {
     let raw = r#"
+version = 1
 [bria]
 [[bria.tasks]]
 id = "t"
@@ -264,6 +284,7 @@ garbage_key = 123
 #[test]
 fn rejects_unknown_field_in_bria_global() {
     let raw = r#"
+version = 1
 [bria]
 [bria.global]
 worker_threads = 0
@@ -277,6 +298,7 @@ nonsense = "reject me"
 #[test]
 fn rejects_unknown_field_in_bria_server() {
     let raw = r#"
+version = 1
 [bria]
 [bria.server]
 enabled = false
@@ -300,6 +322,7 @@ driver = "sqlite"
 url = "sqlite://data/bria/my-state.db"
 migrate = true
 
+version = 1
 [bria]
 [bria.global.state]
 backend = "sqlite"
@@ -318,6 +341,7 @@ fn resolves_shared_store_for_sink() {
 driver = "sqlite"
 url = "sqlite://data/bria/sink-store.db"
 
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -347,6 +371,7 @@ cmd = "true"
 #[test]
 fn errors_on_unknown_store_reference() {
     let raw = r#"
+version = 1
 [bria]
 [bria.global.state]
 backend = "sqlite"
@@ -372,6 +397,7 @@ kind = "file"
 path = "custom/path/input.jsonl"
 format = "jsonl"
 
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -393,6 +419,7 @@ fn direct_path_overrides_path_ref() {
 kind = "file"
 path = "from/profile.jsonl"
 
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -411,6 +438,7 @@ path_ref = "my_jobs"
 #[test]
 fn errors_on_unknown_path_ref() {
     let raw = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -437,6 +465,7 @@ password = "secret"
 reconnect_secs = 10
 qos_prefetch = 50
 
+version = 1
 [bria]
 [[bria.sources]]
 id = "q-source"
@@ -461,6 +490,7 @@ url = "https://hooks.example.com/webhook"
 timeout_secs = 15
 max_retries = 5
 
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -497,6 +527,7 @@ url = "amqp://profile-broker:5672"
 qos_prefetch = 50
 reconnect_secs = 5
 
+version = 1
 [bria]
 [[bria.sources]]
 id = "q-source"
@@ -522,6 +553,7 @@ exchange = "bria.test"
 fn sqlite_is_default_state_backend() {
     // With sqlite feature on (in default features), state should work
     let raw = r#"
+version = 1
 [bria]
 [bria.global.state]
 backend = "sqlite"
@@ -553,6 +585,7 @@ fn env_var_with_default_expands_correctly() {
 url = "amqp://${BRIA_UNI_TEST_SET:-fallback}:5672"
 username = "${BRIA_UNI_TEST_MISSING:-default-user}"
 
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -571,6 +604,7 @@ fn missing_env_var_without_default_fails() {
     unsafe { std::env::remove_var("BRIA_UNI_NEVER_SET_12345") };
 
     let raw = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -590,6 +624,7 @@ fn env_var_default_with_colon_works() {
 [transports.webhook.ops]
 url = "${BRIA_UNI_MISSING_URL:-https://default.example.com/api}"
 
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -672,14 +707,24 @@ source = "src"
 fn checked_in_example_loads_and_validates() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Config.example.toml");
     let config = Config::load_from_path(path).expect("checked-in example should load");
+    #[cfg(feature = "sqlite")]
     config
         .validate()
-        .expect("checked-in example should validate");
+        .expect("checked-in example should validate with SQLite support");
+    #[cfg(not(feature = "sqlite"))]
+    assert!(
+        config
+            .validate()
+            .expect_err("the example requires SQLite support")
+            .to_string()
+            .contains("requires the 'sqlite' feature")
+    );
 }
 
 #[test]
 fn disabled_components_do_not_require_transport_or_server_configuration() {
     let raw = r#"
+version = 1
 [bria]
 
 [[bria.sources]]
@@ -711,6 +756,7 @@ level = "debug"
 format = "text"
 file = "/tmp/bria.log"
 
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -730,6 +776,7 @@ fn bria_log_overrides_shared_log() {
 [log]
 level = "debug"
 
+version = 1
 [bria]
 [bria.global.log]
 level = "error"
@@ -755,6 +802,7 @@ shutdown_timeout_secs = 120
 tmp_dir = "data/shared_tmp"
 max_payload_bytes = 5242880
 
+version = 1
 [bria]
 [bria.global]
 
@@ -779,6 +827,7 @@ bind = "127.0.0.1"
 prefix = "api"
 api_key = "secret-key"
 
+version = 1
 [bria]
 [bria.server]
 enabled = true
@@ -807,6 +856,7 @@ driver = "fs"
 root = "data/objects"
 public_base_url = "https://cdn.example.com"
 
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"

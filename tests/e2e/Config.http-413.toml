@@ -1,7 +1,9 @@
+version = 1
+
 [bria]
 
 # http source (tiny max_body_bytes) -> file sink: 413 Payload Too Large test
-[global]
+[runtime]
 tmp_dir = "/tmp/bria"
 
 [bria.global.log]

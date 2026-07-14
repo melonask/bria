@@ -94,12 +94,12 @@ curl --request POST http://localhost:4000/v1/jobs/images \
 
 | Section | Important parameters / defaults |
 |---|---|
-| `[bria.global]` | `worker_threads=0` (logical CPUs), `shutdown_timeout_secs=30`, `tmp_dir=data/bria/tmp`, `max_payload_bytes=10485760`, `cancel_signal_ttl_secs=3600` |
+| `[bria.global]` | `worker_threads=0` (logical CPUs), `shutdown_timeout_secs=30`, `tmp_dir` (OS temporary directory by default; `data/bria/tmp` is the example override), `max_payload_bytes=10485760`, `cancel_signal_ttl_secs=3600` |
 | `[bria.global.log]` | `level=info`, `format` (`text`/`json`, automatic by TTY), `file` |
 | `[bria.global.state]` | `backend=memory` (`memory`, `sqlite`, `pg`); `store`, `sqlite_path=bria-state.db`, `pg_url` |
 | `[bria.global.retry]` | `max_attempts`, `base_delay_ms`, `max_delay_ms`, `jitter` |
 | `[bria.global.timeout]` | `step_secs`, `action` (`kill`/`term`), `kill_grace_secs` |
-| `[bria.server]` | `enabled=false`, `bind=0.0.0.0`, `port=4000`, `prefix=v1`, `api_key`, `max_body_bytes=52428800`, drain timeout |
+| `[bria.server]` | `enabled=false`, `bind=0.0.0.0`, `port=4000`, `prefix=v1`, `api_key`, `dashboard_path_ref` (a `[paths.<id>]` directory served at `/<prefix>/dashboard`), `max_body_bytes=52428800`, drain timeout |
 
 Retry precedence is step, task, global; task retries use exponential backoff and jitter. Timeout precedence is step, task, global. `term` sends SIGTERM on Unix, waits the grace period, then kills; `kill` kills immediately.
 
@@ -117,7 +117,7 @@ A pipeline result has `pipeline_id`, `job`, `status` (`success`/`failure`), `dur
 | Tasks | `local`, `docker`, `wasm`; `id`, `cmd`, `args`, env, working directory, stdin/stdout/stderr, exit codes, timeout, retry |
 | Sinks | `file`, `webhook`, `queue`, `pg`, `sqlite`, `stream` |
 
-File sources can track cursors. HTTP/webhook paths must be non-empty, unique, and not overlap control routes. Webhook sources accept `hmac_secret`, optional `hmac_header`, and `ack_status`; queue sources expose submit/cancel routing keys, reconnect, and prefetch. Source-specific `max_body_bytes` bounds HTTP input.
+File sources can track cursors. With `authoritative = true`, each full file/directory read is authoritative: IDs absent from the current input, including those in deleted files, produce cancellation signals. HTTP/webhook paths must be non-empty, unique, and not overlap control routes. Webhook sources accept `hmac_secret`, optional `hmac_header`, and `ack_status`; queue sources expose submit/cancel routing keys, reconnect, and prefetch. Source-specific `max_body_bytes` bounds HTTP input.
 
 Tasks default to `local`; `stdin.mode` is `none`, `payload`, or `template`; stdout/stderr modes are `capture`, `stream`, or `discard`, with `max_bytes`. Docker accepts `flags`, `mounts`, and `pull` (`always`, `missing`, `never`); WASM accepts `dirs`, `max_memory_pages`, and `fuel`.
 
@@ -168,11 +168,11 @@ For webhook sources, Bria computes HMAC-SHA256 over the exact raw request body a
 | Global or source body limit exceeded | 413 | text diagnostic |
 | Accepted submission | 201 / configured webhook ack | accepted JSON |
 
-Cancellation is a retained signal checked before queued execution; it cannot undo completed work or promise interruption of a running task. Signals expire after `cancel_signal_ttl_secs`; cancelled jobs are not sent to sinks. A `stop` failure pauses indefinitely until the resume route is called, then returns the original failure result—repair the fault first.
+Cancellation is a retained signal checked before queued execution; it cannot undo completed work or promise interruption of a running task. HTTP cancellation is dynamically registered at `DELETE /<prefix>/<configured-http-or-webhook-source-path>/<job_id>`; queue and authoritative-file sources emit equivalent signals. Signals expire after `cancel_signal_ttl_secs`; cancelled jobs are not sent to sinks. A `stop` failure pauses indefinitely until the resume route is called, then returns the original failure result—repair the fault first.
 
 ## Library API
 
-The crate exports `Config`, `Cli`, `Orchestrator`, `run`, `run_pipeline_once`, `run_pipeline_once_with_config`, `Job`, `Context`, `PipelineResult`, `StepResult`, `StateStore`, and `create_store`. `bria::run(cli).await` implements the CLI flow: ping, load, validate, check, or construct/run the orchestrator.
+The crate exports `Config`, `Cli`, `Orchestrator`, `run`, `run_pipeline_once`, `run_pipeline_once_with_config`, `Job`, `Context`, `PipelineResult`, `StepResult`, `JobStateRecord`, `StateStore`, and `create_store`. `bria::run(cli).await` implements the CLI flow: ping, load, validate, check, or construct/run the orchestrator.
 
 ## Deployment, reliability, security, and troubleshooting
 

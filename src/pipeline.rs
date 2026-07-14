@@ -596,18 +596,8 @@ fn build_execution_plan(pipeline: &PipelineConfig) -> Result<Vec<Vec<String>>> {
     // Build dependency graph
     let mut deps: HashMap<String, Vec<String>> = HashMap::new();
 
-    for (i, step) in pipeline.steps.iter().enumerate() {
-        let step_deps = if step.depends_on.is_empty() {
-            // Implicit dependency: depends on previous step
-            if i > 0 {
-                vec![pipeline.steps[i - 1].id.clone()]
-            } else {
-                vec![]
-            }
-        } else {
-            step.depends_on.clone()
-        };
-        deps.insert(step.id.clone(), step_deps);
+    for step in &pipeline.steps {
+        deps.insert(step.id.clone(), step.depends_on.clone());
     }
 
     // Topological sort with levels

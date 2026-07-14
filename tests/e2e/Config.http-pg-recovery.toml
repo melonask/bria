@@ -1,7 +1,9 @@
+version = 1
+
 [bria]
 
 # http source -> file sink: verifies PG state recovery re-runs in-flight jobs after restart
-[global]
+[runtime]
 tmp_dir = "/tmp/bria"
 
 [bria.global.log]

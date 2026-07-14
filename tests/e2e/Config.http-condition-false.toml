@@ -1,7 +1,9 @@
+version = 1
+
 [bria]
 
 # http source -> file sink: condition step with false expression -> fail action
-[global]
+[runtime]
 tmp_dir = "/tmp/bria"
 
 [bria.global.log]

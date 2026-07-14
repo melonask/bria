@@ -1,10 +1,27 @@
 use std::collections::HashMap;
 
-use bria::config::{self, Config, LogConfig};
+use bria::config::{self, Config as BriaConfig, LogConfig};
 use bria::context::{Context, Job, PipelineResult, StepResult};
 use bria::error::Error;
 use bria::expression::Evaluator;
 use bria::template::TemplateEngine;
+
+struct Config;
+
+impl Config {
+    fn from_str_with_env(raw: &str) -> bria::Result<BriaConfig> {
+        let raw = if raw.trim_start().starts_with("version =") {
+            raw.to_string()
+        } else {
+            format!("version = 1\n{raw}")
+        };
+        BriaConfig::from_str_with_env(&raw)
+    }
+
+    fn load_from_path(path: impl AsRef<std::path::Path>) -> bria::Result<BriaConfig> {
+        BriaConfig::load_from_path(path)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // config::substitute_env
@@ -73,6 +90,7 @@ fn substitute_env_handles_adjacent_tokens() {
 #[test]
 fn from_str_with_env_parses_valid_minimal_toml() {
     let raw = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "manual"
@@ -108,6 +126,7 @@ fn from_str_with_env_returns_error_for_malformed_toml() {
 fn from_str_with_env_rejects_unnested_legacy_config() {
     let err = Config::from_str_with_env(
         r#"
+version = 1
 [[sources]]
 id = "legacy"
 type = "file"
@@ -132,6 +151,7 @@ fn load_from_path_errors_for_nonexistent_file() {
 fn load_from_path_delegates_to_from_str_with_env_for_valid_file() {
     let tmp = std::env::temp_dir().join(format!("bria-valid-config-{}.toml", ulid::Ulid::r#gen()));
     let toml_content = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "manual"
@@ -162,7 +182,7 @@ cmd = "true"
 // Config::validate — global checks
 // ---------------------------------------------------------------------------
 
-fn parse(raw: &str) -> Config {
+fn parse(raw: &str) -> BriaConfig {
     Config::from_str_with_env(raw).expect("parse for validation test")
 }
 
@@ -170,6 +190,7 @@ fn parse(raw: &str) -> Config {
 fn validate_rejects_duplicate_source_ids() {
     let cfg = parse(
         r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "dup"
@@ -190,6 +211,7 @@ path = "b.jsonl"
 fn validate_rejects_duplicate_task_ids() {
     let cfg = parse(
         r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "s"
@@ -215,6 +237,7 @@ cmd = "false"
 fn validate_rejects_duplicate_sink_ids() {
     let cfg = parse(
         r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "s"
@@ -238,6 +261,7 @@ type = "stream"
 fn validate_rejects_duplicate_pipeline_ids() {
     let cfg = parse(
         r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "s"
@@ -276,6 +300,7 @@ cmd = "true"
 fn validate_rejects_jitter_above_one() {
     let cfg = parse(
         r#"
+version = 1
 [bria]
 [bria.global.retry]
 jitter = 1.1
@@ -297,6 +322,7 @@ path = "u.jsonl"
 fn validate_rejects_jitter_below_zero() {
     let cfg = parse(
         r#"
+version = 1
 [bria]
 [bria.global.retry]
 jitter = -0.1
@@ -318,6 +344,7 @@ path = "u.jsonl"
 fn validate_rejects_pg_backend_without_pg_url() {
     let cfg = parse(
         r#"
+version = 1
 [bria]
 [bria.global.state]
 backend = "pg"
@@ -339,6 +366,7 @@ path = "u.jsonl"
 fn validate_accepts_pg_backend_with_pg_url() {
     let cfg = parse(
         r#"
+version = 1
 [bria]
 [bria.global.state]
 backend = "pg"
@@ -357,6 +385,7 @@ path = "u.jsonl"
 fn validate_rejects_http_source_when_server_disabled() {
     let cfg = parse(
         r#"
+version = 1
 [bria]
 [bria.server]
 enabled = false
@@ -377,6 +406,7 @@ path = "events"
 fn validate_rejects_webhook_source_when_server_disabled() {
     let cfg = parse(
         r#"
+version = 1
 [bria]
 [bria.server]
 enabled = false
@@ -397,6 +427,7 @@ path = "hooks"
 fn validate_rejects_stream_sink_when_server_disabled() {
     let cfg = parse(
         r#"
+version = 1
 [bria]
 [bria.server]
 enabled = false
@@ -435,6 +466,7 @@ cmd = "true"
 fn validate_rejects_pipeline_sink_referencing_unknown_id() {
     let cfg = parse(
         r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "s"
@@ -466,6 +498,7 @@ cmd = "true"
 fn validate_rejects_pipeline_failure_sink_referencing_unknown_id() {
     let cfg = parse(
         r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "s"
@@ -499,6 +532,7 @@ cmd = "true"
 fn validate_rejects_dead_letter_without_sink() {
     let cfg = parse(
         r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "s"
@@ -536,6 +570,7 @@ cmd = "true"
 fn validate_rejects_step_sink_referencing_unknown_id() {
     let cfg = parse(
         r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "s"
@@ -566,6 +601,7 @@ cmd = "true"
 fn validate_rejects_step_routing_sink_referencing_unknown_id() {
     let cfg = parse(
         r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "s"
@@ -600,6 +636,7 @@ cmd = "true"
 fn validate_rejects_step_failure_sink_referencing_unknown_id() {
     let cfg = parse(
         r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "s"
@@ -635,6 +672,7 @@ cmd = "true"
 fn validate_collects_multiple_errors_into_joined_message() {
     let cfg = parse(
         r#"
+version = 1
 [bria]
 [bria.server]
 enabled = false
@@ -673,6 +711,7 @@ type = "stream"
 fn validate_rejects_file_source_without_path() {
     let cfg = parse(
         r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "s"

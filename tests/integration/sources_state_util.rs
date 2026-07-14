@@ -476,6 +476,7 @@ fn amqp_url_with_credentials_applies_configured_credentials() {
 fn cancel_signal_ttl_clamps_zero_and_prunes_expired_entries() {
     let config = bria::Config::from_str_with_env(
         r#"
+version = 1
 [bria]
 [bria.global]
 cancel_signal_ttl_secs = 0
@@ -523,6 +524,7 @@ async fn file_source_json_array_emits_multiple_jobs_and_sink_records_all() {
 
     let config_str = format!(
         r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -593,6 +595,7 @@ async fn file_source_csv_emits_header_based_jobs() {
 
     let config_str = format!(
         r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -661,6 +664,7 @@ async fn file_source_ignores_unknown_file_extension() {
 
     let config_str = format!(
         r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"
@@ -727,6 +731,7 @@ async fn file_source_authoritative_mode_cancels_removed_items() {
 
     let config_str = format!(
         r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "src"

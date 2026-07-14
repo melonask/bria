@@ -1,18 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "[pre-commit] Running cargo fmt..."
-cargo fmt --all
+echo "[pre-commit] Checking formatting..."
+cargo fmt --all -- --check
 
-if ! git diff --quiet; then
-    echo "[pre-commit] Formatting changes detected, staging them..."
-    git add -u
-fi
+echo "[pre-commit] Checking no-default-features..."
+cargo clippy --all-targets --no-default-features --locked -- -D warnings
+cargo test --all-targets --no-default-features --locked
 
-echo "[pre-commit] Running cargo test..."
-cargo test 2>&1
-
-echo "[pre-commit] Running cargo clippy..."
-cargo clippy --all-targets -- -D warnings 2>&1
+echo "[pre-commit] Checking all features..."
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo test --all-targets --all-features --locked
 
 echo "[pre-commit] OK"

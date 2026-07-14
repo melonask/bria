@@ -6,7 +6,20 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use bria::{Config, Context, Job, PipelineResult, StepResult, create_store};
+use bria::{Config as BriaConfig, Context, Job, PipelineResult, StepResult, create_store};
+
+struct Config;
+
+impl Config {
+    fn from_str_with_env(raw: &str) -> bria::Result<BriaConfig> {
+        let raw = if raw.trim_start().starts_with("version =") {
+            raw.to_string()
+        } else {
+            format!("version = 1\n{raw}")
+        };
+        BriaConfig::from_str_with_env(&raw)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // File sink tests — exercise SinkDispatcher → file output

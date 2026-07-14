@@ -114,7 +114,7 @@ curl --request POST http://localhost:4000/v1/jobs \
 
 | Component | Contract |
 |---|---|
-| Source | Unique `id`; types: `file`, `http`, `webhook`, `queue`, `cron`, `pg`, `sqlite`. HTTP/webhook require enabled server plus a unique non-empty path. File uses `path`/`path_ref`; queue needs URL/transport and exchange; cron needs schedule; DB sources need connection/store and table mapping. |
+| Source | Unique `id`; types: `file`, `http`, `webhook`, `queue`, `cron`, `pg`, `sqlite`. HTTP/webhook require enabled server plus a unique non-empty path. File uses `path`/`path_ref`; `authoritative = true` treats each complete read as authoritative and cancels IDs removed from its input; queue needs URL/transport and exchange; cron needs schedule; DB sources need connection/store and table mapping. |
 | Task | `local`, `docker`, or `wasm`; requires `id` and `cmd`. Use explicit args/env/working dir, exit codes, finite timeout, retry, stdin (`none`/`payload`/`template`), and stdout/stderr (`capture`/`stream`/`discard`) byte limits. |
 | Pipeline | `source` or `sources`, bounded `queue_capacity`, `concurrency`, sinks, labels, failure policy, and DAG steps. Process needs `task`; map uses sets; condition uses CEL `expr`. Omitted `depends_on` means prior configured step; use `depends_on = []` for independent work. |
 | Sink | `file`, `webhook`, `queue`, `pg`, `sqlite`, `stream`. File appends result JSON/template; database stores per-step result fields; stream is live broadcast only. |
@@ -131,7 +131,7 @@ MiniJinja supports `job.*`, `steps.*`, `env.*`, `now`, `now_unix`, `pipeline.*`,
 
 `memory` has no restart recovery. SQLite/PG record queued/running lifecycle records and re-enqueue incomplete work at startup; recovery may rerun external effects. If a recovered pipeline is unknown, restore compatible configuration before restarting. Never delete durable state/cursors to bypass recovery.
 
-Cancellation returns a signal, checked before queued execution; it cannot undo completed work or guarantee interruption of a running task. Signals expire after `cancel_signal_ttl_secs`; cancelled jobs are not sent to sinks. `failure.action = "stop"` waits indefinitely for resume, then returns the original failure result—repair first.
+Cancellation returns a signal, checked before queued execution; it cannot undo completed work or guarantee interruption of a running task. The HTTP cancellation route is dynamically registered as `DELETE /<prefix>/<configured-http-or-webhook-source-path>/<job_id>`; queue and authoritative-file sources produce equivalent signals. Signals expire after `cancel_signal_ttl_secs`; cancelled jobs are not sent to sinks. `failure.action = "stop"` waits indefinitely for resume, then returns the original failure result—repair first.
 
 Pipeline results contain `pipeline_id`, `job`, `status` (`success`/`failure`), `duration_ms`, `steps`, and ISO-8601 `occurred_at`. A task `StepResult` contains `exit_code`, `duration_ms`, one-indexed `attempt`, optional captured `stdout`/`stderr`, and parsed JSON `outputs`.
 
@@ -151,6 +151,8 @@ Routes are `/<prefix>` (`v1` default). A non-empty `api_key` protects every rout
 | Body over source/global limit | 413 | text diagnostic |
 
 `Idempotency-Key`/`X-Correlation-ID` are optional non-empty visible-ASCII values (max 512 bytes); when both are supplied they must match. Bria stores them as `correlation_key` but does **not** deduplicate.
+
+Set `bria.server.dashboard_path_ref` to a `[paths.<id>]` directory to serve its static dashboard at `/<prefix>/dashboard`. Dashboard files use the same server authentication policy as every other route.
 
 Webhook source HMAC is SHA-256 over the exact raw body, compared in constant time. With `hmac_secret`, use the configured header or `X-Bria-Signature`; raw hex and `sha256=<hex>` are accepted. Outbound webhook sinks POST serialized results, optionally attach hex HMAC-SHA256, and retry failed/timeout requests using exponential delay. Streams can drop events for lagged clients.
 

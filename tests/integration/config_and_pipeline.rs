@@ -2,6 +2,7 @@ use bria::{Config, Job, run_pipeline_once};
 
 fn minimal_config() -> String {
     r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "manual"
@@ -46,6 +47,7 @@ name = "greeting"
 #[test]
 fn env_substitution_fails_for_unset_variables() {
     let raw = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "source"
@@ -64,6 +66,7 @@ hmac_secret = "${BRIA_INTEGRATION_TEST_MISSING_ENV_DO_NOT_SET}"
 #[test]
 fn validation_rejects_unknown_task_reference() {
     let raw = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "manual"
@@ -90,6 +93,7 @@ task = "does-not-exist"
 #[test]
 fn validation_requires_pg_state_url() {
     let raw = r#"
+version = 1
 [bria]
 [bria.global.state]
 backend = "pg"
@@ -110,6 +114,7 @@ path = "unused.jsonl"
 #[test]
 fn stderr_default_is_one_mib() {
     let raw = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "manual"
@@ -146,6 +151,7 @@ async fn sqlite_state_store_recovers_running_jobs_and_clears_completed_jobs() {
     ));
     let raw = format!(
         r#"
+version = 1
 [bria]
 [bria.global.state]
 backend = "sqlite"
@@ -196,6 +202,7 @@ path = "unused.jsonl"
 #[tokio::test]
 async fn docker_style_stdin_template_is_available_to_local_tasks() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "manual"
@@ -271,6 +278,7 @@ async fn run_pipeline_once_executes_local_task_and_extracts_output() {
 #[tokio::test]
 async fn map_step_sets_nested_payload_targets() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "manual"
@@ -324,6 +332,7 @@ task = "print-nested"
 #[tokio::test]
 async fn cel_expressions_can_read_pipeline_id() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "manual"
@@ -396,6 +405,7 @@ async fn directory_file_source_does_not_reemit_unchanged_files() {
 
     let raw = format!(
         r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "files"
@@ -466,6 +476,7 @@ fn cli_check_validates_config_without_starting_workers() {
     std::fs::write(
         &config_path,
         r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "input"
@@ -489,6 +500,7 @@ path = "input.jsonl"
 #[tokio::test]
 async fn condition_skip_to_skips_intermediate_steps() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "manual"
@@ -558,6 +570,7 @@ name = "ok"
 #[tokio::test]
 async fn condition_emit_stops_pipeline_early() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "manual"
@@ -605,6 +618,7 @@ task = "fail-if-run"
 #[tokio::test]
 async fn parallel_steps_retain_all_results_for_fan_in() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "manual"
@@ -685,6 +699,7 @@ depends_on = ["left", "right"]
 #[tokio::test]
 async fn stdout_discard_mode_does_not_capture_output() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "manual"
@@ -729,6 +744,7 @@ task = "no-capture"
 #[tokio::test]
 async fn timeout_term_still_fails_even_if_process_handles_sigterm() {
     let config = r#"
+version = 1
 [bria]
 [[bria.sources]]
 id = "manual"

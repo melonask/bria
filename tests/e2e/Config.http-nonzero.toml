@@ -1,7 +1,9 @@
+version = 1
+
 [bria]
 
 # http source -> file sink: task exits non-zero (failure path test)
-[global]
+[runtime]
 tmp_dir = "/tmp/bria"
 
 [bria.global.log]
